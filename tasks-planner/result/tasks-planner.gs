@@ -27,6 +27,13 @@
  *  8. При первом запуске скрипт запросит разрешения на доступ
  *     к Таблицам и Календарю — нажмите «Разрешить» (Allow).
  *
+ *  ПОВЕДЕНИЕ ПРИ ЗАПУСКЕ "НА СЕГОДНЯ":
+ *  Если запустить планировщик в течение рабочего дня (например, в 11:00
+ *  или в 14:00), задачи будут запланированы от текущего времени до конца
+ *  рабочего дня (WORK_END_HOUR, по умолчанию 18:00). В прошлое ничего
+ *  не ставится. Если запуск произошёл после WORK_END_HOUR, скрипт
+ *  сообщит, что рабочий день уже закончился.
+ *
  *  НАСТРОЙКИ (можно изменить в секции CONFIG ниже):
  *  - SHEET_NAME        — имя вкладки с задачами (по умолчанию "QIRElab")
  *  - CALENDAR_ID       — ID календаря (по умолчанию "primary")
@@ -195,6 +202,21 @@ function planTasksForDate(targetDate, filterNumbers) {
   var ui = SpreadsheetApp.getUi();
   var isFilteredMode = filterNumbers && filterNumbers.length > 0;
 
+  // Pre-check: if planning for today after the workday end, refuse early.
+  // (Skipped in filtered mode, which spans up to 7 days from now.)
+  var now = new Date();
+  var isToday = targetDate.toDateString() === now.toDateString();
+  if (!isFilteredMode && isToday && now.getHours() >= CONFIG.WORK_END_HOUR) {
+    ui.alert(
+      'Рабочий день уже закончился',
+      'Сейчас ' + formatTime(now) + ', а рабочий день заканчивается в ' +
+        CONFIG.WORK_END_HOUR + ':00.\n\n' +
+        'Запланируйте задачи на завтра или используйте пункт «на дату...».',
+      ui.ButtonSet.OK
+    );
+    return;
+  }
+
   // 0. Archive deleted tasks, then compact empty rows
   archiveDeletedTasks();
   compactRows();
@@ -308,11 +330,23 @@ function planTasksForDate(targetDate, filterNumbers) {
   saveTaskSnapshot();
 
   // 7. Show summary
+  var windowInfo = '';
+  if (!isFilteredMode) {
+    var effectiveStart = getEffectiveStartTime(targetDate, CONFIG.WORK_START_HOUR);
+    windowInfo = 'Окно планирования: ' + formatTime(effectiveStart) +
+      ' – ' + CONFIG.WORK_END_HOUR + ':00';
+    if (isToday && effectiveStart.getHours() > CONFIG.WORK_START_HOUR) {
+      windowInfo += ' (сегодня, начиная с текущего времени)';
+    }
+    windowInfo += '\n';
+  }
+
   ui.alert(
     'Планирование завершено',
     (isFilteredMode
       ? 'Начиная с: ' + formatDate(targetDate) + ' (текущего времени, до 7 дней вперёд)\nРежим: выбранные задачи по номерам\n'
       : 'Дата: ' + formatDate(targetDate) + '\n') +
+    windowInfo +
     'Запланировано задач: ' + totalScheduled + ' из ' + tasks.length + '\n' +
     (pinnedResult.scheduled > 0 ? 'Из них привязано ко времени (из комментария): ' + pinnedResult.scheduled + '\n' : '') +
     (skipped > 0 ? 'Пропущено (уже в календаре на другие дни): ' + skipped + '\n' : '') +
@@ -428,9 +462,35 @@ function sortByPriority(tasks) {
 }
 
 /**
+ * Returns the effective start time for the working window on the given date.
+ * If targetDate is today and the current time is already past workStartHour,
+ * starts from "now" (rounded up to the next 5-minute mark) instead — so tasks
+ * are never scheduled in the past.
+ * If targetDate is in the future or current time is still before workStartHour,
+ * returns workStartHour on that date.
+ */
+function getEffectiveStartTime(targetDate, workStartHour) {
+  var workdayStart = new Date(targetDate);
+  workdayStart.setHours(workStartHour, 0, 0, 0);
+
+  var now = new Date();
+  if (workdayStart.toDateString() !== now.toDateString()) return workdayStart;
+  if (now <= workdayStart) return workdayStart;
+
+  // Round up to the next 5-minute mark for cleaner slots
+  var mins = now.getMinutes();
+  var roundedMins = Math.ceil(mins / 5) * 5;
+  var effective = new Date(now);
+  effective.setMinutes(roundedMins, 0, 0);
+  return effective;
+}
+
+/**
  * Gets free time slots on the given date between startHour and endHour,
  * considering existing calendar events.
  * Defaults: WORK_START_HOUR..WORK_END_HOUR.
+ * When targetDate is today and current time is inside the working window,
+ * the start of the window is shifted to "now" so nothing is scheduled in the past.
  */
 function getFreeSlots(targetDate, startHour, endHour) {
   if (startHour === undefined) startHour = CONFIG.WORK_START_HOUR;
@@ -439,18 +499,7 @@ function getFreeSlots(targetDate, startHour, endHour) {
   var cal = CalendarApp.getCalendarById(CONFIG.CALENDAR_ID);
   if (!cal) cal = CalendarApp.getDefaultCalendar();
 
-  var dayStart = new Date(targetDate);
-  dayStart.setHours(startHour, 0, 0, 0);
-
-  // If planning for today, don't schedule in the past — start from now
-  var now = new Date();
-  if (dayStart.toDateString() === now.toDateString() && now > dayStart) {
-    // Round up to the next 5-minute mark for cleaner slots
-    var mins = now.getMinutes();
-    var roundedMins = Math.ceil(mins / 5) * 5;
-    dayStart = new Date(now);
-    dayStart.setMinutes(roundedMins, 0, 0);
-  }
+  var dayStart = getEffectiveStartTime(targetDate, startHour);
 
   var dayEnd = new Date(targetDate);
   if (endHour >= 24) {
@@ -1340,4 +1389,13 @@ function formatDate(d) {
   var day = ('0' + d.getDate()).slice(-2);
   var month = ('0' + (d.getMonth() + 1)).slice(-2);
   return day + '.' + month + '.' + d.getFullYear();
+}
+
+/**
+ * Formats a date as HH:MM.
+ */
+function formatTime(d) {
+  var hh = ('0' + d.getHours()).slice(-2);
+  var mm = ('0' + d.getMinutes()).slice(-2);
+  return hh + ':' + mm;
 }
