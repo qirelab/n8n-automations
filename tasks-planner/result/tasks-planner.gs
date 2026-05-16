@@ -79,7 +79,7 @@ function onOpen() {
     .addItem('Удалить автозадачи на сегодня', 'clearAutoEventsToday')
     .addItem('Удалить автозадачи на завтра', 'clearAutoEventsTomorrow')
     .addSeparator()
-    .addItem('Сохранить снимок задач (для архивации)', 'manualSnapshot')
+    .addItem('Архивировать запланированные задачи', 'archivePlannedTasks')
     .addToUi();
 }
 
@@ -180,17 +180,160 @@ function clearAutoEventsTomorrow() {
   clearAutoEvents(d);
 }
 
-function manualSnapshot() {
-  saveTaskSnapshot();
+/**
+ * Moves all tasks with the "Запланировано" checkbox enabled to the "Archive" tab.
+ * The Archive tab preserves the same columns and structure except for "Запланировано".
+ */
+function archivePlannedTasks() {
+  var ui = SpreadsheetApp.getUi();
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var snap = ss.getSheetByName('_Snapshot');
-  var count = snap ? Math.max(0, snap.getLastRow() - 1) : 0;
-  SpreadsheetApp.getUi().alert(
-    'Снимок сохранён',
-    'Зафиксировано задач: ' + count + '\n\n' +
-    'При следующем планировании удалённые задачи будут перенесены в "Archive".',
-    SpreadsheetApp.getUi().ButtonSet.OK
+  var sheet = ss.getSheetByName(CONFIG.SHEET_NAME);
+  if (!sheet) {
+    ui.alert('Вкладка "' + CONFIG.SHEET_NAME + '" не найдена.');
+    return;
+  }
+
+  var layout = getSheetLayout(sheet);
+  if (!layout || layout.colMap.name < 0) {
+    ui.alert('Не удалось определить структуру таблицы.');
+    return;
+  }
+
+  var plannedCol = layout.colMap.planned;
+  if (plannedCol < 0) {
+    ui.alert('Колонка "Запланировано" не найдена.');
+    return;
+  }
+
+  var lastRow = sheet.getLastRow();
+  var lastCol = sheet.getLastColumn();
+  if (lastRow < layout.dataStartRow) {
+    ui.alert('Нет задач для архивации.');
+    return;
+  }
+
+  var data = sheet.getRange(layout.dataStartRow, 1, lastRow - layout.dataStartRow + 1, lastCol).getValues();
+
+  // Indices of columns to keep in Archive (every column except "Запланировано")
+  var keepCols = [];
+  for (var c = 0; c < lastCol; c++) {
+    if (c !== plannedCol) keepCols.push(c);
+  }
+
+  // Collect planned rows (and their row indices in the source sheet)
+  var rowsToArchive = [];
+  var rowIndicesToClear = [];
+  for (var i = 0; i < data.length; i++) {
+    var name = String(data[i][layout.colMap.name]).trim();
+    if (!name) continue;
+    if (data[i][plannedCol] === true) {
+      var archivedRow = [];
+      for (var kc = 0; kc < keepCols.length; kc++) {
+        archivedRow.push(data[i][keepCols[kc]]);
+      }
+      rowsToArchive.push(archivedRow);
+      rowIndicesToClear.push(i + layout.dataStartRow);
+    }
+  }
+
+  if (rowsToArchive.length === 0) {
+    ui.alert('Нет задач с отметкой "Запланировано" для архивации.');
+    return;
+  }
+
+  // Build Archive headers (without "Запланировано")
+  var archiveHeaders = [];
+  for (var hc = 0; hc < keepCols.length; hc++) {
+    archiveHeaders.push(layout.headers[keepCols[hc]]);
+  }
+
+  // Get or create the Archive sheet with proper headers
+  var archiveSheet = ss.getSheetByName('Archive');
+  if (!archiveSheet) {
+    archiveSheet = ss.insertSheet('Archive');
+    archiveSheet.getRange(1, 1, 1, archiveHeaders.length).setValues([archiveHeaders]);
+  } else if (archiveSheet.getLastRow() === 0) {
+    archiveSheet.getRange(1, 1, 1, archiveHeaders.length).setValues([archiveHeaders]);
+  }
+
+  // Archive has its own numeration — locate the Number column inside the archive layout
+  // and renumber rows being moved so they continue from the current max in Archive.
+  var numberColInArchive = -1;
+  if (layout.colMap.number >= 0) {
+    for (var nc = 0; nc < keepCols.length; nc++) {
+      if (keepCols[nc] === layout.colMap.number) {
+        numberColInArchive = nc;
+        break;
+      }
+    }
+  }
+
+  if (numberColInArchive >= 0) {
+    var nextNumber = 1;
+    if (archiveSheet.getLastRow() > 1) {
+      var existing = archiveSheet.getRange(2, numberColInArchive + 1,
+        archiveSheet.getLastRow() - 1, 1).getValues();
+      var maxNum = 0;
+      for (var en = 0; en < existing.length; en++) {
+        var n = Number(existing[en][0]);
+        if (!isNaN(n) && n > maxNum) maxNum = n;
+      }
+      nextNumber = maxNum + 1;
+    }
+    for (var rn = 0; rn < rowsToArchive.length; rn++) {
+      rowsToArchive[rn][numberColInArchive] = nextNumber++;
+    }
+  }
+
+  // Append archived rows below the existing content
+  var startRow = archiveSheet.getLastRow() + 1;
+  archiveSheet.getRange(startRow, 1, rowsToArchive.length, archiveHeaders.length).setValues(rowsToArchive);
+
+  // Clear archived rows from the main sheet, then compact and renumber
+  for (var r = 0; r < rowIndicesToClear.length; r++) {
+    sheet.getRange(rowIndicesToClear[r], 1, 1, lastCol).clearContent();
+  }
+  compactRows();
+  renumberSheet(sheet);
+
+  ui.alert(
+    'Архивация завершена',
+    'Перенесено задач в Archive: ' + rowsToArchive.length,
+    ui.ButtonSet.OK
   );
+}
+
+/**
+ * Re-assigns sequential numbers (1..N) in the "Номер" column of a sheet,
+ * but only if the current numeration is not already correct. No-op if
+ * the sheet has no number column.
+ */
+function renumberSheet(sheet) {
+  var layout = getSheetLayout(sheet);
+  if (!layout || layout.colMap.number < 0 || layout.colMap.name < 0) return;
+
+  var numberCol = layout.colMap.number;
+  var nameCol = layout.colMap.name;
+  var lastRow = sheet.getLastRow();
+  if (lastRow < layout.dataStartRow) return;
+
+  var rowCount = lastRow - layout.dataStartRow + 1;
+  var nameValues = sheet.getRange(layout.dataStartRow, nameCol + 1, rowCount, 1).getValues();
+  var numberValues = sheet.getRange(layout.dataStartRow, numberCol + 1, rowCount, 1).getValues();
+
+  var expected = 1;
+  var corrections = []; // { row (1-based), value }
+  for (var i = 0; i < rowCount; i++) {
+    if (!String(nameValues[i][0]).trim()) continue;
+    if (Number(numberValues[i][0]) !== expected) {
+      corrections.push({ row: layout.dataStartRow + i, value: expected });
+    }
+    expected++;
+  }
+
+  for (var c = 0; c < corrections.length; c++) {
+    sheet.getRange(corrections[c].row, numberCol + 1).setValue(corrections[c].value);
+  }
 }
 
 // ======================== MAIN LOGIC =========================
@@ -217,8 +360,7 @@ function planTasksForDate(targetDate, filterNumbers) {
     return;
   }
 
-  // 0. Archive deleted tasks, then compact empty rows
-  archiveDeletedTasks();
+  // 0. Compact empty rows
   compactRows();
 
   // 1. Read tasks from the sheet
@@ -325,9 +467,6 @@ function planTasksForDate(targetDate, filterNumbers) {
 
   // 6. Set checkboxes for scheduled tasks
   markPlanned(allScheduledRows, true);
-
-  // 6b. Save snapshot of current tasks for future archive detection
-  saveTaskSnapshot();
 
   // 7. Show summary
   var windowInfo = '';
@@ -1035,120 +1174,6 @@ function unmarkPlannedByName(taskNames) {
       sheet.getRange(i + layout.dataStartRow, plannedCol + 1).setValue(false);
     }
   }
-}
-
-/**
- * Detects tasks deleted since the last planning run and copies them to the "Archive" tab.
- * Uses a hidden sheet "_Snapshot" to store the previous state (survives script re-installs).
- */
-function archiveDeletedTasks() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sheet = ss.getSheetByName(CONFIG.SHEET_NAME);
-  if (!sheet) return;
-
-  var layout = getSheetLayout(sheet);
-  if (!layout || layout.colMap.name < 0) return;
-
-  var nameCol = layout.colMap.name;
-  var lastRow = sheet.getLastRow();
-  var lastCol = sheet.getLastColumn();
-  if (lastRow < layout.dataStartRow) return;
-
-  // Get current task names
-  var data = sheet.getRange(layout.dataStartRow, 1, lastRow - layout.dataStartRow + 1, lastCol).getValues();
-  var currentNames = [];
-  for (var i = 0; i < data.length; i++) {
-    var name = String(data[i][nameCol]).trim();
-    if (name) currentNames.push(name);
-  }
-
-  // Load previous snapshot from hidden sheet
-  var snapshotSheet = ss.getSheetByName('_Snapshot');
-  if (!snapshotSheet) {
-    // First run ever — create snapshot from current state and return
-    Logger.log('Снимок не найден. Создаю первый снимок из текущих задач.');
-    saveTaskSnapshot();
-    return;
-  }
-
-  var snapLastRow = snapshotSheet.getLastRow();
-  if (snapLastRow < 2) {
-    saveTaskSnapshot();
-    return;
-  }
-
-  var snapData = snapshotSheet.getRange(2, 1, snapLastRow - 1, lastCol).getValues();
-
-  // Find deleted tasks: were in snapshot but not in current list
-  var deletedRows = [];
-  for (var j = 0; j < snapData.length; j++) {
-    var prevName = String(snapData[j][nameCol]).trim();
-    if (prevName && currentNames.indexOf(prevName) < 0) {
-      deletedRows.push(snapData[j]);
-    }
-  }
-
-  if (deletedRows.length === 0) return;
-
-  // Get or create the Archive sheet with same headers
-  var archiveSheet = ss.getSheetByName('Archive');
-  if (!archiveSheet) {
-    archiveSheet = ss.insertSheet('Archive');
-    archiveSheet.getRange(1, 1, 1, lastCol).setValues([layout.headers]);
-  }
-
-  // Append deleted tasks to Archive
-  for (var k = 0; k < deletedRows.length; k++) {
-    archiveSheet.appendRow(deletedRows[k]);
-  }
-
-  Logger.log('Архивировано удалённых задач: ' + deletedRows.length);
-}
-
-/**
- * Saves a full copy of current tasks to the hidden "_Snapshot" sheet.
- * This snapshot is compared on the next run to detect deleted tasks.
- */
-function saveTaskSnapshot() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sheet = ss.getSheetByName(CONFIG.SHEET_NAME);
-  if (!sheet) return;
-
-  var layout = getSheetLayout(sheet);
-  if (!layout || layout.colMap.name < 0) return;
-
-  var nameCol = layout.colMap.name;
-  var lastRow = sheet.getLastRow();
-  var lastCol = sheet.getLastColumn();
-
-  // Get or create the snapshot sheet
-  var snapshotSheet = ss.getSheetByName('_Snapshot');
-  if (!snapshotSheet) {
-    snapshotSheet = ss.insertSheet('_Snapshot');
-  } else {
-    snapshotSheet.clear();
-  }
-
-  // Hide the snapshot sheet so it doesn't clutter the UI
-  snapshotSheet.hideSheet();
-
-  // Copy headers
-  snapshotSheet.getRange(1, 1, 1, lastCol).setValues([layout.headers]);
-
-  // Copy all non-empty data rows
-  if (lastRow >= layout.dataStartRow) {
-    var data = sheet.getRange(layout.dataStartRow, 1, lastRow - layout.dataStartRow + 1, lastCol).getValues();
-    var nonEmpty = [];
-    for (var i = 0; i < data.length; i++) {
-      var name = String(data[i][nameCol]).trim();
-      if (name) nonEmpty.push(data[i]);
-    }
-    if (nonEmpty.length > 0) {
-      snapshotSheet.getRange(2, 1, nonEmpty.length, lastCol).setValues(nonEmpty);
-    }
-  }
-
-  Logger.log('Снимок сохранён: ' + (snapshotSheet.getLastRow() - 1) + ' задач');
 }
 
 /**
