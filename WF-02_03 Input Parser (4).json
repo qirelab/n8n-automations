@@ -1,0 +1,1025 @@
+{
+  "name": "WF-02_03 Input Parser",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## WF-02_03 Input Parser\n\n**После импорта сделать:**\n\n1. **Execute WF-04** → выбрать WF-04 Drive Uploader\n2. **Execute WF-05** → выбрать WF-05 Sheets Writer\n3. **Gemini** ноды → пересвязать credential если нужно\n4. Выключить `active: false` — тест через Execute Workflow\n\n**Env-переменные:**\n- `TELEGRAM_BOT_TOKEN` ✓\n- `GEMINI_API_KEY` ✓ (через credential)\n- `GEMINI_MODEL_ID` (опционально, дефолт `models/gemini-2.5-flash`)\n\n**Контракт входа от WF-01:**\n```\n{ chatId, type, file_id?, mime_type?, text?, file_size? }\ntype ∈ photo | document | voice | text\n```\n\n**Контракт выхода в WF-01:**\n```\n{ chatId, confirmationText, isError }\n```",
+        "height": 460,
+        "width": 650,
+        "color": 4
+      },
+      "id": "c1580902-ff2b-4229-a0d0-2050744878a0",
+      "name": "Note 73276a6f",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -16160,
+        3616
+      ]
+    },
+    {
+      "parameters": {
+        "content": "### Ветка DOCUMENT\nMIME Check → Get/Download → Gemini Vision → Parse → WF-04 → Merge → WF-05",
+        "height": 80,
+        "width": 1800,
+        "color": 5
+      },
+      "id": "99367ebd-d1d2-483b-b89f-9ee8e107b02f",
+      "name": "Note b62c0bfb",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -15472,
+        3872
+      ]
+    },
+    {
+      "parameters": {
+        "content": "### Ветка VOICE\nGet/Download → Gemini STT → Extract → (общий участок) Gemini Text → Parse → WF-05",
+        "height": 80,
+        "width": 1800,
+        "color": 6
+      },
+      "id": "95140f72-7fa2-46ff-af2b-131a95175b0e",
+      "name": "Note 3fe70dc9",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -15472,
+        4144
+      ]
+    },
+    {
+      "parameters": {
+        "content": "### Ветка TEXT\nPass Text → (переходит на общий участок с Voice) → Gemini Text → Parse → WF-05",
+        "height": 80,
+        "width": 1500,
+        "color": 3
+      },
+      "id": "60df4d5e-c83d-4473-8576-3035ca706b60",
+      "name": "Note b2a6b665",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -15472,
+        4384
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "wf02-03-parse",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "59e337b2-ac22-4fba-b504-ab276cc8bd00",
+      "name": "Start",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -16144,
+        4128
+      ],
+      "webhookId": "wf02-03-parse"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Валидация входящих данных — работает и для Webhook, и для Execute Workflow\n// Webhook присылает payload в $json.body, Execute Workflow — в $json напрямую\nconst raw = $input.first().json;\nconst input = raw.body || raw;\n\n// Унификация chatId\nlet chatId = input.chatId || input.chat_id || input.chatID;\nif (chatId !== undefined && chatId !== null) {\n  chatId = String(chatId).trim();\n}\n\nif (!chatId) {\n  const keys = Object.keys(input);\n  const sample = keys.length\n    ? keys.map(k => `${k}=${JSON.stringify(input[k]).slice(0,30)}`).join(', ')\n    : '(пустой объект)';\n  throw new Error('InputValidator: chatId отсутствует/пуст. Получено: ' + sample);\n}\n\nconst type = String(input.type || '').toLowerCase().trim();\nconst validTypes = ['photo', 'document', 'voice', 'text'];\nif (!validTypes.includes(type)) {\n  return [{ json: {\n    chatId, isError: true, _route: 3,\n    confirmationText: '\\u26A0\\uFE0F Неподдерживаемый формат. Отправьте PDF, фото, голосовое или текст.'\n  }}];\n}\n\nconst fileId = String(input.file_id || '').trim();\nconst textVal = String(input.text || '').trim();\n\nif ((type === 'photo' || type === 'document' || type === 'voice') && !fileId) {\n  return [{ json: {\n    chatId, isError: true, _route: 3,\n    confirmationText: '\\u26A0\\uFE0F Ошибка: файл не получен.'\n  }}];\n}\n\nif (type === 'text' && !textVal) {\n  return [{ json: {\n    chatId, isError: true, _route: 3,\n    confirmationText: '\\u26A0\\uFE0F Пустое сообщение. Напишите текст о платеже.'\n  }}];\n}\n\nlet route = 2;\nif (type === 'photo' || type === 'document') route = 0;\nelse if (type === 'voice') route = 1;\n\nreturn [{ json: {\n  chatId, type,\n  file_id: fileId,\n  mime_type: String(input.mime_type || input.mimeType || '').trim(),\n  text: textVal,\n  file_size: Number(input.file_size || 0),\n  isError: false,\n  _route: route\n}}];"
+      },
+      "id": "0c6bae22-378a-47c1-bc5d-5014efd11ece",
+      "name": "Input Validator",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -15920,
+        4128
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "expression",
+        "output": "={{ $json._route }}"
+      },
+      "id": "3d58bf36-6bf1-4a0b-9481-13001063f889",
+      "name": "Type Switch",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        -15696,
+        4096
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Проверка MIME-типа перед отправкой в Gemini Vision\nconst d = $input.first().json;\nconst mime = String(d.mime_type || '').toLowerCase();\n\nconst allowed = [\n  'application/pdf',\n  'image/jpeg',\n  'image/jpg',\n  'image/png'\n];\n\n// Telegram photo часто не даёт mime_type — считаем jpeg по умолчанию\nconst isPhoto = d.type === 'photo';\nconst effectiveMime = mime || (isPhoto ? 'image/jpeg' : '');\n\nif (!allowed.includes(effectiveMime)) {\n  return [{ json: {\n    chatId: d.chatId,\n    isError: true,\n    confirmationText: '\\u26A0\\uFE0F Неподдерживаемый формат файла: ' + (mime || '?') + '\\nПоддерживаются: PDF, JPG, PNG.',\n    _skipApi: true\n  }}];\n}\n\n// Проверка размера (Telegram лимит 20МБ)\nif (d.file_size && d.file_size > 20 * 1024 * 1024) {\n  return [{ json: {\n    chatId: d.chatId,\n    isError: true,\n    confirmationText: '\\u26A0\\uFE0F Файл слишком большой (макс 20 МБ).',\n    _skipApi: true\n  }}];\n}\n\nreturn [{ json: { ...d, mime_type: effectiveMime, _skipApi: false } }];"
+      },
+      "id": "59679de4-4a25-4c2f-aacb-6079c091c766",
+      "name": "MIME Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -15472,
+        3984
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Routes: 0=error (skip API), 1=ok (proceed to TG Get File)\nconst d = $input.first().json;\nreturn [{ json: { ...d, _mimeRoute: d._skipApi ? 0 : 1 } }];"
+      },
+      "id": "142b3669-2988-4036-b048-d3492956ce0e",
+      "name": "MIME Route",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -15248,
+        3984
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 2,
+        "output": "={{ $json._mimeRoute }}"
+      },
+      "id": "d68cf590-7e06-4b70-bc43-d2821fe648cc",
+      "name": "MIME Switch",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        -15024,
+        3984
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/getFile",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "file_id",
+              "value": "={{ $json.file_id }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "a32fea99-2162-4b99-8708-47753ca6e9f6",
+      "name": "TG Get File (Doc)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -14800,
+        3984
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/file/bot{{ $env.TELEGRAM_BOT_TOKEN }}/{{ $json.result.file_path }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          },
+          "timeout": 20000
+        }
+      },
+      "id": "c94131ed-bf39-4e69-ab02-5b9d2fbffff5",
+      "name": "Download File",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -14576,
+        3984
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "document",
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-2.5-flash",
+          "mode": "list",
+          "cachedResultName": "models/gemini-2.5-flash"
+        },
+        "text": "Ты — система извлечения реквизитов первичной бухгалтерской документации. Компания ведёт учёт в ДВУХ юрисдикциях: Беларусь и Польша.\n\nПолучив изображение или PDF документа, верни ТОЛЬКО валидный JSON без пояснений и markdown-обёрток. Структура строго фиксированная:\n\n{\n  \"docDate\": \"DD.MM.YYYY или пустая строка\",\n  \"invoice_number\": \"главный номер документа (FV, INV, №, Счёт №...) или пустая строка\",\n  \"counterparty\": \"наименование контрагента или пустая строка\",\n  \"amount\": \"числовое значение суммы (только цифры и точка, без знака и валюты)\",\n  \"currency\": \"BYN|USD|EUR|PLN или пустая строка\",\n  \"payDate\": \"DD.MM.YYYY или пустая строка\",\n  \"status\": \"Поступление|Выбытие\",\n  \"payStatus\": \"Оплачено|Не оплачено\",\n  \"country\": \"Беларусь|Польша\",\n  \"countrySignal\": \"strong|weak\",\n  \"isMixed\": false,\n  \"aiDescription\": \"краткое резюме операции\"\n}\n\n═══ РЕКВИЗИТЫ НАШЕЙ КОМПАНИИ ═══\n\nСистема ведёт учёт от имени одной компании, работающей в двух юрисдикциях.\nИспользуй эти данные для определения статуса операции (Поступление / Выбытие)\nи для правильного определения контрагента.\n\nБЕЛАРУСЬ:\n\nПолное наименование: Общество с ограниченной ответственностью \"Квае Лаб\"\nСокр. наименование: ООО \"Квае Лаб\"\nУНП: 591051335\nЮр. адрес: г. Минск 220024, ул. Тимирязева, 67, офис 926\nПочтовый адрес: г. Гродно 230006, ул. О. Соломовой, 147-174\nВыступает в лице: директора Савицкого Сергея Валентиновича\nНаименование банка: Приорбанк ОАО\nНомер счёта: BY94PJCB30126063911000000933 в BYN\nБИК: PJCBBY2X\nEmail: info@f-suite.com\nТел/Viber/Telegram: +375 25 501 29 77\n\nПОЛЬША:\n\nPełna nazwa firmy: QIRE LAB SPÓŁKA Z OGRANICZONĄ ODPOWIEDZIALNOŚCIĄ\nSkrócona nazwa firmy: QIRE LAB\nNIP: 5423505856\nREGON: 542864985\nKRS: 0001197301\nAdres siedziby firmy: ul. Hetmańska 25, 15-727 Białystok, Polska\nGłówny numer komórkowy: +48731270861\nAdres e-mail firmy: INFO@F-SUITE.COM\nPrezes zarządu: Sergiusz Sawicki\nPLN: 84102013320000150216354384\nEUR: 61102013320000190216354408\nUSD: 51102013320000170216354395\nBIC SWIFT: BPKOPLPW\nNazwa: PKO Bank Polski\nAdres: ul. Świętokrzyska 36, 00-116 Warszawa, Polska\n\n═══ ПРАВИЛО ОПРЕДЕЛЕНИЯ status НА ОСНОВЕ РЕКВИЗИТОВ ═══\n\nЛогика простая: деньги идут К нам или ОТ нас?\n\nПоступление (деньги приходят к нам):\n  — наша компания указана как: sprzedawca, dostawca, odbiorca zapłaty,\n    продавец, исполнитель, поставщик, получатель платежа\n  — в документе наш р/с или наш NIP стоит на стороне получателя\n  — контрагент платит НАМ (faktura wystawiona przez nas, акт выполненных работ нами)\n\nВыбытие (деньги уходят от нас):\n  — наша компания указана как: nabywca, odbiorca, kupujący, płatnik,\n    покупатель, заказчик, плательщик\n  — в документе наш р/с или наш NIP стоит на стороне плательщика\n  — мы платим КОНТРАГЕНТУ (faktura wystawiona dla nas, счёт выставлен нам)\n\nЕсли роли неочевидны — используй ключевые слова из документа как дополнительный сигнал.\n\nКОНТРАГЕНТ — это всегда ДРУГАЯ сторона (не наша компания).\nЕсли в документе фигурируют только наши реквизиты без второй стороны — counterparty = пустая строка.\n\n═══ ОПРЕДЕЛЕНИЕ status ═══\n- Поступление: входящий платёж, приходный ордер, акт входящий, «получено», «поступила оплата», «получена оплата», «przychód», «otrzymano»\n- Выбытие: исходящий платёж, расходная накладная, инвойс к оплате, «оплачено», «заплатил», «zakupiono», «zapłaciłem», faktura VAT к оплате\n- Дефолт: Выбытие\n\n═══ ОПРЕДЕЛЕНИЕ payStatus ═══\n- Оплачено: кассовый чек, «оплачено», «paid», «zapłacono», «paragon fiskalny», явная дата оплаты\n- Не оплачено: «к оплате», «unpaid», «do zapłaty», «не оплачено»\n- Дефолт: Не оплачено\n\n═══ ОПРЕДЕЛЕНИЕ country (приоритет сверху вниз) ═══\n\nПриоритет 1 — СИЛЬНЫЕ признаки (идентификаторы):\n  • NIP (10 цифр, часто XXX-XXX-XX-XX), REGON, KRS           → country=\"Польша\",  countrySignal=\"strong\"\n  • УНП (9 цифр)                                             → country=\"Беларусь\", countrySignal=\"strong\"\n\nПриоритет 2 — форма собственности:\n  • sp. z o.o. / S.A. / sp.j. / sp.k. / spółka               → country=\"Польша\",  countrySignal=\"strong\"\n  • ОАО / ЗАО / ОДО / ЧУП / УП / ИП (кириллица, бел. формы) → country=\"Беларусь\", countrySignal=\"strong\"\n\nПриоритет 3 — язык документа:\n  • польские термины: faktura, nabywca, sprzedawca, netto, brutto, do zapłaty, płatnik\n                                                             → country=\"Польша\",  countrySignal=\"strong\"\n  • русск./белорусск.: накладная, счёт-фактура, акт выполненных работ\n                                                             → country=\"Беларусь\", countrySignal=\"strong\"\n\nПриоритет 4 — адрес / почтовый индекс:\n  • польский индекс формата XX-XXX или города РП: Warszawa, Kraków, Gdańsk, Poznań, Wrocław, Łódź, Lublin, Katowice, Pruszków\n                                                             → country=\"Польша\",  countrySignal=\"strong\"\n  • города РБ: Минск, Гомель, Брест, Витебск, Могилёв, Гродно\n                                                             → country=\"Беларусь\", countrySignal=\"strong\"\n\nПриоритет 5 — СЛАБЫЕ признаки (учитываются ТОЛЬКО при отсутствии признаков 1–4):\n  • валюта PLN  → country=\"Польша\",  countrySignal=\"weak\"\n  • валюта BYN  → country=\"Беларусь\", countrySignal=\"weak\"\n  • USD/EUR сами по себе НЕ определяют страну\n\nЕсли никаких признаков не найдено: country=\"Беларусь\", countrySignal=\"weak\" (дефолт).\n\n═══ КОНФЛИКТ ПРИЗНАКОВ (смешанная сделка BY↔PL) ═══\nЕсли документ содержит и NIP, и УНП:\n  • Определяй country по ВЛАДЕЛЬЦУ документа — тот, кто ВЫПУСТИЛ документ\n    (sprzedawca / продавец / получатель оплаты для инвойса, плательщик для платёжного поручения)\n  • Установи isMixed=true\n\n═══ invoice_number — номер документа ═══\n\nИскать в тексте документа метки-префиксы и брать следующее за ними значение:\n  Польские: Faktura VAT nr, Nr faktury, Nr, FV, FS, INV\n  Русские:  Счёт №, Инвойс №, №, N°\n\nНормализация: убрать пробелы вокруг разделителей (/, -), сохранить исходный регистр.\nЕсли несколько номеров — взять первый (основной номер документа, не номера корректировок/приложений).\nЕсли номер не найден → пустая строка.\n\nПримеры:\n  «Faktura VAT nr FV02012026»     → \"FV02012026\"\n  «Счёт № 127»                   → \"Счёт №127\"\n  «INV-2026-001»                  → \"INV-2026-001\"\n  «FS/02/2026/001»                → \"FS/02/2026/001\"\n  «Nr faktury: 2026/03/15»        → \"2026/03/15\"\n\n═══ aiDescription ═══\nФормат: «{Статус}. {назначение}. {сумма} {валюта}[, {пометки}]»\nДобавляй пометки в квадратных скобках ТОЛЬКО если применимы:\n  • [Не оплачено]                    — когда payStatus=\"Не оплачено\"\n  • [смешанная сделка BY↔PL]          — когда isMixed=true\n  • [страна определена эвристически]  — когда countrySignal=\"weak\"\n\nПримеры:\n- \"Выбытие. Оплата аренды офиса, февраль 2026. 2500 EUR\"\n- \"Выбытие. Реклама Google Ads. 430 USD\"\n- \"Поступление. Оплата от ООО Горизонт. 3000 BYN\"\n- \"Выбытие. Usługi marketingowe, Acme sp. z o.o. 2500 PLN\"\n- \"Поступление. Faktura VAT od Nova Media sp. z o.o. 4800 PLN\"\n- \"Выбытие. Zakup oprogramowania. 1200 PLN. [Не оплачено]\"\n- \"Выбытие. Оплата PL-контрагенту Acme sp. z o.o. 500 EUR. [смешанная сделка BY↔PL]\"\n\n═══ НЕЧИТАЕМ ═══\nЕсли документ нечитаем или не содержит финансовой информации — верни ТОЛЬКО:\n{\"error\": \"НЕЧИТАЕМ\"}\n\n═══ ФОРМАТЫ ═══\nДаты: DD.MM.YYYY, D месяца YYYY, YYYY-MM-DD — нормализуй в DD.MM.YYYY.\nВалюты: BYN, USD, EUR, PLN. Если не указана — пустая строка.\nСумма: первое итоговое числовое значение документа (нетто или брутто — то, что указано как итог к оплате).\n\nИзвлеки реквизиты из приложенного документа.",
+        "inputType": "binary",
+        "options": {}
+      },
+      "id": "00489e77-4b92-44e6-b5d3-eda8d4ac5676",
+      "name": "Gemini Vision",
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1,
+      "position": [
+        -14144,
+        3984
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "rFj4CFpfE1gEGUO6",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// WF-02 Parse Doc — v2.4 (добавлен invoice_number)\n// Изменения: извлекается поле invoice_number из ответа Gemini Vision\n// ============================================================\n\nfunction extractGeminiText(item) {\n  if (!item) return '';\n  if (item.content && item.content.parts && item.content.parts[0] && item.content.parts[0].text) {\n    return item.content.parts[0].text;\n  }\n  if (typeof item.text === 'string' && item.text.length) return item.text;\n  if (typeof item.content === 'string' && item.content.length) return item.content;\n  if (Array.isArray(item.content) && item.content[0]) {\n    const c0 = item.content[0];\n    if (typeof c0 === 'string') return c0;\n    if (c0.text) return c0.text;\n  }\n  if (typeof item.response === 'string') return item.response;\n  if (item.message && typeof item.message.content === 'string') return item.message.content;\n  if (typeof item.output === 'string') return item.output;\n  if (typeof item.generatedText === 'string') return item.generatedText;\n  if (item.candidates && item.candidates[0] && item.candidates[0].content) {\n    const parts = item.candidates[0].content.parts;\n    if (parts && parts[0] && parts[0].text) return parts[0].text;\n  }\n  return '';\n}\n\nfunction normalizeCountry(raw) {\n  const s = String(raw || '').toLowerCase().trim();\n  if (!s) return 'Беларусь';\n  if (s.includes('польш') || s.includes('polsk') || s.includes('poland') ||\n      s === 'pl' || s === 'pol') return 'Польша';\n  if (s.includes('белар') || s.includes('беларус') || s.includes('belarus') ||\n      s.includes('bialo') || s === 'by' || s === 'bel') return 'Беларусь';\n  return 'Беларусь';\n}\n\nconst item = $input.first().json;\nconst chatId = $('Input Validator').first().json.chatId;\n\nconst raw = extractGeminiText(item);\n\nif (!raw) {\n  return [{ json: {\n    chatId, isError: true,\n    confirmationText: '\\u26A0\\uFE0F Не удалось получить ответ от Gemini. Попробуйте снова.',\n    _rawDebug: JSON.stringify(Object.keys(item)).slice(0, 200)\n  }}];\n}\n\nlet parsed;\ntry {\n  const cleaned = raw.replace(/```json\\s*/gi, '').replace(/```\\s*/g, '');\n  const m = cleaned.match(/\\{[\\s\\S]*\\}/);\n  if (!m) throw new Error('No JSON object found');\n  parsed = JSON.parse(m[0]);\n} catch (e) {\n  return [{ json: {\n    chatId, isError: true,\n    confirmationText: '\\u274C Не удалось распознать документ. Отправьте в лучшем качестве.',\n    _parseError: e.message\n  }}];\n}\n\nif (parsed.error === 'НЕЧИТАЕМ') {\n  return [{ json: {\n    chatId, isError: true,\n    confirmationText: '\\u274C Файл нечитаем. Пожалуйста, отправьте повторно в лучшем качестве или другом формате.'\n  }}];\n}\n\nconst status = String(parsed.status || '').includes('Поступление') ? 'Поступление' : 'Выбытие';\nconst payStatus = (parsed.payStatus === 'Оплачено') ? 'Оплачено' : 'Не оплачено';\n\nconst amtRaw = String(parsed.amount || '').replace(/[^0-9.,]/g, '').replace(',', '.');\nconst currency = String(parsed.currency || '').toUpperCase();\nconst amount = parseFloat(amtRaw) || 0;\n\nconst payDate = (payStatus === 'Не оплачено') ? '' : (parsed.payDate || '');\n\nconst country = normalizeCountry(parsed.country);\nconst countrySignal = (String(parsed.countrySignal || '').toLowerCase() === 'weak') ? 'weak' : 'strong';\nconst isMixed = parsed.isMixed === true;\n\n// === invoice_number (v2.4) ===\nconst invoiceNumber = String(parsed.invoice_number || '').trim();\n\nlet aiDescription = String(parsed.aiDescription || '').trim();\nif (isMixed && !aiDescription.includes('[смешанная сделка')) {\n  aiDescription += (aiDescription ? '. ' : '') + '[смешанная сделка BY\\u2194PL]';\n}\nif (countrySignal === 'weak' && !aiDescription.includes('[страна определена эвристически')) {\n  aiDescription += (aiDescription ? '. ' : '') + '[страна определена эвристически]';\n}\n\nreturn [{ json: {\n  chatId,\n  isError: false,\n  hasFile: true,\n  type: 'document',\n  docDate:        parsed.docDate || '',\n  invoice_number: invoiceNumber,          // ← НОВОЕ ПОЛЕ v2.4\n  counterparty:   parsed.counterparty || '',\n  payDate,\n  amount,\n  currency,\n  status,\n  payStatus,\n  country,\n  countrySignal,\n  isMixed,\n  aiDescription,\n  driveUrl:       '',\n  mime_type:      $('Input Validator').first().json.mime_type\n}}];"
+      },
+      "id": "819d640e-683e-4cbe-a697-841281ccb733",
+      "name": "Parse Doc",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -13856,
+        3984
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $input.first().json;\nreturn [{ json: { ...d, _docRoute: d.isError ? 0 : 1 } }];"
+      },
+      "id": "1bd06d69-f959-4cc8-a277-0057a7c41568",
+      "name": "Doc Route",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -13568,
+        3984
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 2,
+        "output": "={{ $json._docRoute }}"
+      },
+      "id": "a000a8af-079d-474d-8653-7c5a2aa9f93d",
+      "name": "Doc Switch",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        -13344,
+        3984
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Забираем поля из Doc Route и URL от WF-04\nconst fields = $('Parse Doc').first().json;\nconst wf04Out = $input.first().json;\nconst driveUrl = wf04Out.driveUrl || wf04Out.webViewLink || '';\nreturn [{ json: { ...fields, driveUrl, hasFile: true } }];"
+      },
+      "id": "02e10e61-487d-46a2-93cb-436cac3da61d",
+      "name": "Merge Drive URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -12608,
+        3984
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/getFile",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "file_id",
+              "value": "={{ $json.file_id }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "00c1ed17-73d5-4952-b43c-cdae0aec1db2",
+      "name": "TG Get File (Voice)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -15456,
+        4240
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/file/bot{{ $env.TELEGRAM_BOT_TOKEN }}/{{ $json.result.file_path }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          },
+          "timeout": 20000
+        }
+      },
+      "id": "2ead3534-3c49-47f8-b8ef-30d753943bb7",
+      "name": "Download Voice",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -15232,
+        4240
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "audio",
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-2.5-flash",
+          "mode": "list",
+          "cachedResultName": "models/gemini-2.5-flash"
+        },
+        "inputType": "binary",
+        "options": {}
+      },
+      "id": "40ca36b2-3a64-448c-a3ba-21238f70daa4",
+      "name": "Gemini STT",
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1,
+      "position": [
+        -14896,
+        4240
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "rFj4CFpfE1gEGUO6",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Helper: извлекает текст из ответа Gemini (все известные форматы n8n-ноды)\nfunction extractGeminiText(item) {\n  if (!item) return '';\n  // Формат 1: item.content.parts[0].text (n8n 2.x @langchain/google-gemini — ВАШ СЛУЧАЙ)\n  if (item.content && item.content.parts && item.content.parts[0] && item.content.parts[0].text) {\n    return item.content.parts[0].text;\n  }\n  // Формат 2: item.text\n  if (typeof item.text === 'string' && item.text.length) return item.text;\n  // Формат 3: item.content как строка\n  if (typeof item.content === 'string' && item.content.length) return item.content;\n  // Формат 4: item.content как массив\n  if (Array.isArray(item.content) && item.content[0]) {\n    const c0 = item.content[0];\n    if (typeof c0 === 'string') return c0;\n    if (c0.text) return c0.text;\n  }\n  // Формат 5: item.response\n  if (typeof item.response === 'string') return item.response;\n  // Формат 6: item.message.content\n  if (item.message && typeof item.message.content === 'string') return item.message.content;\n  // Формат 7: item.output\n  if (typeof item.output === 'string') return item.output;\n  // Формат 8: item.generatedText\n  if (typeof item.generatedText === 'string') return item.generatedText;\n  // Формат 9: Gemini raw API с candidates\n  if (item.candidates && item.candidates[0] && item.candidates[0].content) {\n    const parts = item.candidates[0].content.parts;\n    if (parts && parts[0] && parts[0].text) return parts[0].text;\n  }\n  return '';\n}\n\nconst item = $input.first().json;\nconst chatId = $('Input Validator').first().json.chatId;\nconst raw = extractGeminiText(item).trim();\n\nif (!raw) {\n  return [{ json: {\n    chatId, isError: true, transcribedText: '',\n    confirmationText: '\\u274C Не удалось распознать голосовое сообщение. Попробуйте сказать ещё раз или напишите текстом.'\n  }}];\n}\n\nreturn [{ json: { chatId, isError: false, transcribedText: raw } }];"
+      },
+      "id": "b81061d5-86de-4b46-84bb-6c5b946ae840",
+      "name": "Extract Voice Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -14672,
+        4240
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $input.first().json;\nreturn [{ json: { ...d, _voiceRoute: d.isError ? 0 : 1 } }];"
+      },
+      "id": "55723232-a0ea-42a5-af47-53ed34894356",
+      "name": "Voice Route",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -14448,
+        4240
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 2,
+        "output": "={{ $json._voiceRoute }}"
+      },
+      "id": "fd302ea1-dbc7-484e-be46-c2cc0017fce5",
+      "name": "Voice Switch",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        -14224,
+        4240
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $input.first().json;\nreturn [{ json: {\n  chatId: d.chatId,\n  transcribedText: d.text || '',\n  isError: false\n}}];"
+      },
+      "id": "d3cb5386-8a61-4381-8010-1c03ee13363d",
+      "name": "Pass Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -15472,
+        4480
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-2.5-flash",
+          "mode": "list",
+          "cachedResultName": "models/gemini-2.5-flash"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "={{ $json.transcribedText }}"
+            }
+          ]
+        },
+        "options": {
+          "systemMessage": "Ты — система извлечения реквизитов платёжных операций. Компания ведёт учёт в ДВУХ юрисдикциях: Беларусь и Польша.  Получив текст (диктовка или сообщение от владельца бизнеса), верни ТОЛЬКО валидный JSON без пояснений и markdown-обёрток:  {   \"docDate\": \"DD.MM.YYYY или пустая строка\",   \"invoice_number\": \"номер инвойса если явно упомянут в тексте, иначе пустая строка\",   \"counterparty\": \"наименование контрагента или пустая строка\",   \"amount\": \"числовое значение суммы (только цифры и точка)\",   \"currency\": \"BYN|USD|EUR|PLN или пустая строка\",   \"payDate\": \"DD.MM.YYYY или пустая строка (=docDate если операция уже совершена)\",   \"status\": \"Поступление|Выбытие\",   \"payStatus\": \"Оплачено|Не оплачено\",   \"country\": \"Беларусь|Польша\",   \"countrySignal\": \"strong|weak\",   \"isMixed\": false,   \"aiDescription\": \"краткое резюме операции\" }  ═══ РЕКВИЗИТЫ НАШЕЙ КОМПАНИИ ═══  Система ведёт учёт от имени одной компании, работающей в двух юрисдикциях. Используй эти данные для определения статуса операции (Поступление / Выбытие) и для правильного определения контрагента.  БЕЛАРУСЬ:  Полное наименование: Общество с ограниченной ответственностью \"Квае Лаб\" Сокр. наименование: ООО \"Квае Лаб\" УНП: 591051335 Юр. адрес: г. Минск 220024, ул. Тимирязева, 67, офис 926 Почтовый адрес: г. Гродно 230006, ул. О. Соломовой, 147-174 Выступает в лице: директора Савицкого Сергея Валентиновича Наименование банка: Приорбанк ОАО Номер счёта: BY94PJCB30126063911000000933 в BYN БИК: PJCBBY2X Email: info@f-suite.com Тел/Viber/Telegram: +375 25 501 29 77  ПОЛЬША:  Pełna nazwa firmy: QIRE LAB SPÓŁKA Z OGRANICZONĄ ODPOWIEDZIALNOŚCIĄ Skrócona nazwa firmy: QIRE LAB NIP: 5423505856 REGON: 542864985 KRS: 0001197301 Adres siedziby firmy: ul. Hetmańska 25, 15-727 Białystok, Polska Główny numer komórkowy: +48731270861 Adres e-mail firmy: INFO@F-SUITE.COM Prezes zarządu: Sergiusz Sawicki PLN: 84102013320000150216354384 EUR: 61102013320000190216354408 USD: 51102013320000170216354395 BIC SWIFT: BPKOPLPW Nazwa: PKO Bank Polski Adres: ul. Świętokrzyska 36, 00-116 Warszawa, Polska  ═══ ПРАВИЛО ОПРЕДЕЛЕНИЯ status НА ОСНОВЕ РЕКВИЗИТОВ ═══  Логика простая: деньги идут К нам или ОТ нас?  Поступление (деньги приходят к нам):   — наша компания указана как: sprzedawca, dostawca, odbiorca zapłaty,     продавец, исполнитель, поставщик, получатель платежа   — контрагент платит НАМ  Выбытие (деньги уходят от нас):   — наша компания указана как: nabywca, odbiorca, kupujący, płatnik,     покупатель, заказчик, плательщик   — мы платим КОНТРАГЕНТУ  Если роли неочевидны — используй ключевые слова из текста как дополнительный сигнал.  КОНТРАГЕНТ — это всегда ДРУГАЯ сторона (не наша компания). Если в тексте фигурируют только наши реквизиты без второй стороны — counterparty = пустая строка.  ═══ status ═══ - Выбытие: «оплатил», «заплатил», «купил», «оплата за», «расход», «закупка», «потратил», «zapłaciłem», «zakupiono» - Поступление: «получил», «поступила оплата», «получена оплата», «доход», «оплата от», «przychód», «otrzymano» - Дефолт: Выбытие  ═══ payStatus ═══ - Оплачено: операция в прошедшем времени, нет слов «не оплачено»/«к оплате»/«do zapłaty» - Не оплачено: слова «не оплачено», «не оплатил», «ещё не», «планирую», «к оплате», «do zapłaty» - Дефолт: Оплачено (операция описана в прошедшем времени)  ═══ country (ключевое поле для маршрутизации документа) ═══  Приоритет 1 — форма собственности контрагента в тексте:   • «sp. z o.o.», «S.A.», «spółka»                 → \"Польша\",  countrySignal=\"strong\"   • «ООО», «ОАО», «ЗАО», «ЧУП», «ИП», «УП»         → \"Беларусь\", countrySignal=\"strong\"  Приоритет 2 — язык ключевых слов:   • польские: faktura, płatność, usługi, zapłaciłem, do zapłaty                                                     → \"Польша\",  countrySignal=\"strong\"   • русский сам по себе НЕ признак — обе юрисдикции могут говорить по-русски  Приоритет 3 — прямое упоминание локации:   • Минск, Гомель, Брест, «в Беларуси»              → \"Беларусь\", countrySignal=\"strong\"   • Warszawa, Kraków, «w Polsce», «в Польше», Варшава, Краков                                                     → \"Польша\",  countrySignal=\"strong\"  Приоритет 4 — СЛАБЫЕ признаки (учитывать только при отсутствии приоритетов 1–3):   • валюта PLN  → \"Польша\",  countrySignal=\"weak\"   • валюта BYN  → \"Беларусь\", countrySignal=\"weak\"   • USD/EUR сами по себе страну НЕ определяют  Дефолт при отсутствии признаков: country=\"Беларусь\", countrySignal=\"weak\".  ═══ invoice_number — номер инвойса из текста ═══  Владелец бизнеса может упомянуть номер инвойса в свободном тексте или диктовке. Искать паттерны: «инвойс №», «счёт №», «по счёту», «FV», «INV», «FS», «faktura nr»,                  «договор №» — и брать следующее за ними значение. Нормализация: убрать пробелы вокруг разделителей, сохранить регистр. Если номер явно не упомянут → пустая строка (это норма для голосового/текстового ввода).  Примеры:   «оплатил инвойс FV02012026 Acme 2500 PLN»  → invoice_number=\"FV02012026\"   «оплата по счёту №127 3000 BYN»            → invoice_number=\"Счёт №127\"   «12 февраля оплата аренды 2500 EUR»        → invoice_number=\"\"  ═══ aiDescription — пометки в [скобках] ═══   • [Не оплачено]                    — если payStatus=\"Не оплачено\"   • [страна определена эвристически]  — если countrySignal=\"weak\"   • [смешанная сделка BY↔PL]          — если явно указаны обе стороны разных юрисдикций (isMixed=true)  ═══ ФОРМАТЫ ДАТ ═══ - DD.MM.YYYY: «05.02.2026» - «D месяца YYYY»: «5 февраля 2026» → «05.02.2026» - «сегодня» → текущая дата, «вчера» → вчерашняя  ═══ ПРИМЕРЫ ═══  Вход: «12 февраля 2026 оплачена аренда офиса 2500 EUR» Ответ: {\"docDate\":\"12.02.2026\",\"invoice_number\":\"\",\"counterparty\":\"\",\"amount\":\"2500\",\"currency\":\"EUR\",\"payDate\":\"12.02.2026\",\"status\":\"Выбытие\",\"payStatus\":\"Оплачено\",\"country\":\"Беларусь\",\"countrySignal\":\"weak\",\"isMixed\":false,\"aiDescription\":\"Выбытие. Оплата аренды офиса. 2500 EUR. [страна определена эвристически]\"}  Вход: «03.03.2026 закупка канцелярии 1200 BYN (не оплачено)» Ответ: {\"docDate\":\"03.03.2026\",\"invoice_number\":\"\",\"counterparty\":\"\",\"amount\":\"1200\",\"currency\":\"BYN\",\"payDate\":\"\",\"status\":\"Выбытие\",\"payStatus\":\"Не оплачено\",\"country\":\"Беларусь\",\"countrySignal\":\"strong\",\"isMixed\":false,\"aiDescription\":\"Выбытие. Закупка канцелярии. 1200 BYN. [Не оплачено]\"}  Вход: «Поступила оплата от ООО Горизонт 15.01.2026 3000 BYN» Ответ: {\"docDate\":\"15.01.2026\",\"invoice_number\":\"\",\"counterparty\":\"ООО Горизонт\",\"amount\":\"3000\",\"currency\":\"BYN\",\"payDate\":\"15.01.2026\",\"status\":\"Поступление\",\"payStatus\":\"Оплачено\",\"country\":\"Беларусь\",\"countrySignal\":\"strong\",\"isMixed\":false,\"aiDescription\":\"Поступление. Оплата от ООО Горизонт. 3000 BYN\"}  Вход: «Zapłaciłem za usługi sp. z o.o. Acme 14.02.2026 2500 PLN» Ответ: {\"docDate\":\"14.02.2026\",\"invoice_number\":\"\",\"counterparty\":\"Acme sp. z o.o.\",\"amount\":\"2500\",\"currency\":\"PLN\",\"payDate\":\"14.02.2026\",\"status\":\"Выбытие\",\"payStatus\":\"Оплачено\",\"country\":\"Польша\",\"countrySignal\":\"strong\",\"isMixed\":false,\"aiDescription\":\"Выбытие. Usługi Acme sp. z o.o. 2500 PLN\"}  Вход: «Поступление от Nova Media sp. z o.o. 18.02.2026 4800 PLN» Ответ: {\"docDate\":\"18.02.2026\",\"invoice_number\":\"\",\"counterparty\":\"Nova Media sp. z o.o.\",\"amount\":\"4800\",\"currency\":\"PLN\",\"payDate\":\"18.02.2026\",\"status\":\"Поступление\",\"payStatus\":\"Оплачено\",\"country\":\"Польша\",\"countrySignal\":\"strong\",\"isMixed\":false,\"aiDescription\":\"Поступление. Оплата от Nova Media sp. z o.o. 4800 PLN\"}  Вход: «Оплата Allegro sp. z o.o. 03.03.2026 1200 PLN (не оплачено)» Ответ: {\"docDate\":\"03.03.2026\",\"invoice_number\":\"\",\"counterparty\":\"Allegro sp. z o.o.\",\"amount\":\"1200\",\"currency\":\"PLN\",\"payDate\":\"\",\"status\":\"Выбытие\",\"payStatus\":\"Не оплачено\",\"country\":\"Польша\",\"countrySignal\":\"strong\",\"isMixed\":false,\"aiDescription\":\"Выбытие. Оплата Allegro sp. z o.o. 1200 PLN. [Не оплачено]\"}  Вход: «оплатил инвойс FV02012026 Acme sp. z o.o. 2500 PLN 05.02.2026» Ответ: {\"docDate\":\"05.02.2026\",\"invoice_number\":\"FV02012026\",\"counterparty\":\"Acme sp. z o.o.\",\"amount\":\"2500\",\"currency\":\"PLN\",\"payDate\":\"05.02.2026\",\"status\":\"Выбытие\",\"payStatus\":\"Оплачено\",\"country\":\"Польша\",\"countrySignal\":\"strong\",\"isMixed\":false,\"aiDescription\":\"Выбытие. Оплата по инвойсу FV02012026, Acme sp. z o.o. 2500 PLN\"}"
+        }
+      },
+      "id": "cb1a3081-e7f3-4436-9b48-62cab4261690",
+      "name": "Gemini Text",
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1,
+      "position": [
+        -13920,
+        4400
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "rFj4CFpfE1gEGUO6",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// WF-03 Parse Text — v2.4 (добавлен invoice_number)\n// Изменения: извлекается поле invoice_number из ответа Gemini Text\n// ============================================================\n\nfunction extractGeminiText(item) {\n  if (!item) return '';\n  if (item.content && item.content.parts && item.content.parts[0] && item.content.parts[0].text) {\n    return item.content.parts[0].text;\n  }\n  if (typeof item.text === 'string' && item.text.length) return item.text;\n  if (typeof item.content === 'string' && item.content.length) return item.content;\n  if (Array.isArray(item.content) && item.content[0]) {\n    const c0 = item.content[0];\n    if (typeof c0 === 'string') return c0;\n    if (c0.text) return c0.text;\n  }\n  if (typeof item.response === 'string') return item.response;\n  if (item.message && typeof item.message.content === 'string') return item.message.content;\n  if (typeof item.output === 'string') return item.output;\n  if (typeof item.generatedText === 'string') return item.generatedText;\n  if (item.candidates && item.candidates[0] && item.candidates[0].content) {\n    const parts = item.candidates[0].content.parts;\n    if (parts && parts[0] && parts[0].text) return parts[0].text;\n  }\n  return '';\n}\n\nfunction normalizeCountry(raw) {\n  const s = String(raw || '').toLowerCase().trim();\n  if (!s) return 'Беларусь';\n  if (s.includes('польш') || s.includes('polsk') || s.includes('poland') ||\n      s === 'pl' || s === 'pol') return 'Польша';\n  if (s.includes('белар') || s.includes('белорус') || s.includes('belarus') ||\n      s.includes('bialo') || s === 'by' || s === 'bel') return 'Беларусь';\n  return 'Беларусь';\n}\n\nconst item = $input.first().json;\nconst chatId = $('Input Validator').first().json.chatId;\nconst raw = extractGeminiText(item);\n\nif (!raw) {\n  return [{ json: {\n    chatId, isError: true,\n    confirmationText: '\\u26A0\\uFE0F Не удалось получить ответ от Gemini.'\n  }}];\n}\n\nlet parsed;\ntry {\n  const cleaned = raw.replace(/```json\\s*/gi, '').replace(/```\\s*/g, '');\n  const m = cleaned.match(/\\{[\\s\\S]*\\}/);\n  if (!m) throw new Error('No JSON object');\n  parsed = JSON.parse(m[0]);\n} catch (e) {\n  return [{ json: {\n    chatId, isError: true,\n    confirmationText: '\\u26A0\\uFE0F Не удалось распознать. Переформулируйте: укажите сумму, валюту и суть операции.'\n  }}];\n}\n\nconst status = String(parsed.status || '').includes('Поступление') ? 'Поступление' : 'Выбытие';\n// Для текста default = Оплачено (операция описана в прошедшем времени)\nconst payStatus = (String(parsed.payStatus || '').includes('Не оплачено')) ? 'Не оплачено' : 'Оплачено';\n\nconst amtRaw = String(parsed.amount || '').replace(/[^0-9.,]/g, '').replace(',', '.');\nconst currency = String(parsed.currency || '').toUpperCase();\nconst amount = parseFloat(amtRaw) || 0;\n\nconst payDate = (payStatus === 'Не оплачено') ? '' : (parsed.payDate || parsed.docDate || '');\n\nconst country = normalizeCountry(parsed.country);\nconst countrySignal = (String(parsed.countrySignal || '').toLowerCase() === 'weak') ? 'weak' : 'strong';\nconst isMixed = parsed.isMixed === true;\n\n// === invoice_number (v2.4) ===\nconst invoiceNumber = String(parsed.invoice_number || '').trim();\n\nlet aiDescription = String(parsed.aiDescription || '').trim();\nif (isMixed && !aiDescription.includes('[смешанная сделка')) {\n  aiDescription += (aiDescription ? '. ' : '') + '[смешанная сделка BY\\u2194PL]';\n}\nif (countrySignal === 'weak' && !aiDescription.includes('[страна определена эвристически')) {\n  aiDescription += (aiDescription ? '. ' : '') + '[страна определена эвристически]';\n}\n\nreturn [{ json: {\n  chatId,\n  isError: false,\n  hasFile: false,\n  type: 'text',\n  docDate:        parsed.docDate || '',\n  invoice_number: invoiceNumber,          // ← НОВОЕ ПОЛЕ v2.4\n  counterparty:   parsed.counterparty || '',\n  payDate,\n  amount,\n  currency,\n  status,\n  payStatus,\n  country,\n  countrySignal,\n  isMixed,\n  aiDescription,\n  driveUrl:       '',\n  mime_type:      ''\n}}];"
+      },
+      "id": "2eb656d1-dd97-4065-b4e3-dc96f2d0c9f4",
+      "name": "Parse Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -13520,
+        4400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $input.first().json;\nreturn [{ json: { ...d, _textRoute: d.isError ? 0 : 1 } }];"
+      },
+      "id": "88d52cb3-ffc6-4f88-a30b-686295185693",
+      "name": "Text Route",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -13296,
+        4400
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 2,
+        "output": "={{ $json._textRoute }}"
+      },
+      "id": "6125a715-a57e-4812-86f3-295969ab14ed",
+      "name": "Text Switch",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        -13072,
+        4400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// WF-02/03 Build Return — v2.3\n// Получает данные из WF-05 Build Confirmation (chatId, confirmationText,\n// nrId, status, signedAmount, currency, country).\n// Если confirmationText пустой — строим fallback по шаблону PRD §1.8.\n// ============================================================\n\nconst d = $input.first().json;\n\nlet ct = d.confirmationText;\nif (!ct) {\n  const country = d.country || 'Беларусь';\n  const flag = (country === 'Польша')\n    ? '\\uD83C\\uDDF5\\uD83C\\uDDF1'   // 🇵🇱\n    : '\\uD83C\\uDDE7\\uD83C\\uDDFE';  // 🇧🇾\n\n  // Путь на Drive\n  const rootFolder = (country === 'Польша') ? 'Poland' : 'Belarus';\n  let monthFolder = '';\n  if (d.docDate && /^\\d{2}\\.\\d{2}\\.\\d{4}$/.test(d.docDate)) {\n    const [, mm, yyyy] = d.docDate.match(/^(\\d{2})\\.(\\d{2})\\.(\\d{4})$/);\n    monthFolder = yyyy + '.' + mm;\n  }\n  const subFolder = (d.status === 'Поступление') ? 'income' : 'outcome';\n  const drivePath = monthFolder\n    ? `${rootFolder}/${monthFolder}/${subFolder}/`\n    : `${rootFolder}/`;\n  const drivePart = d.driveUrl ? '\\n\\uD83D\\uDD17 ' + d.driveUrl : '';\n\n  // v2.3: сборка строки суммы из signedAmount (число) + currency (строка)\n  const signedAmt = parseFloat(d.signedAmount);\n  const cur = String(d.currency || '').toUpperCase();\n  let amtDisplay = '\\u2014';\n  if (!isNaN(signedAmt) && signedAmt !== 0) {\n    const sign = signedAmt >= 0 ? '+' : '-';\n    const abs  = Math.abs(signedAmt);\n    const fmt  = Number.isInteger(abs) ? String(abs) : abs.toFixed(2);\n    amtDisplay = `${sign}${fmt}${cur ? ' ' + cur : ''}`;\n  }\n\n  ct = '\\u2705 Записано\\n\\n'\n    + '\\uD83D\\uDCCC ' + (d.nrId || '?.????') + ' | ' + (d.status || '') + '\\n'\n    + flag + ' ' + country + '\\n'\n    + '\\uD83D\\uDCC5 ' + (d.docDate || '\\u2014') + '\\n'\n    + '\\uD83C\\uDFE2 ' + (d.counterparty || '\\u2014') + '\\n'\n    + '\\uD83D\\uDCB0 ' + amtDisplay + ' | ' + (d.payStatus || '') + '\\n'\n    + '\\uD83D\\uDCC1 ' + drivePath\n    + drivePart + '\\n\\n'\n    + '\\uD83D\\uDCAC ' + (d.aiDescription || '');\n}\n\nreturn [{ json: {\n  chatId: d.chatId,\n  confirmationText: ct,\n  isError: false,\n  nrId:    d.nrId    || '',\n  status:  d.status  || '',\n  country: d.country || 'Беларусь'\n}}];\n"
+      },
+      "id": "5042a694-714b-4bf7-87ec-5be941b8440c",
+      "name": "Build Return",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -12112,
+        4272
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Возврат в WF-01 с ошибкой\nconst d = $input.first().json;\nreturn [{ json: {\n  chatId: d.chatId,\n  confirmationText: d.confirmationText || '\\u26A0\\uFE0F Произошла ошибка. Попробуйте ещё раз.',\n  isError: true\n}}];"
+      },
+      "id": "455b2244-e5a7-41ba-896a-fddb52cf6d5a",
+      "name": "Return Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -13088,
+        3424
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { chatId: $json.chatId, confirmationText: $json.confirmationText, isError: $json.isError || false } }}",
+        "options": {}
+      },
+      "id": "fbf1e165-0b5b-40c2-8f38-08b60da5803b",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -11872,
+        4160
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "6PExh9DJ4hGtA3Ys",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -12912,
+        3984
+      ],
+      "name": "Call WF04",
+      "id": "a7c911df-1fb0-4cdc-9c2d-a6d29eda92c7"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "NRRRVVtjFQjGzdiR",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -12320,
+        4256
+      ],
+      "name": "Call  WF05",
+      "id": "ee3d2363-cc00-410a-a35f-548e0ec03b84"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Force correct MIME on binary before Gemini Vision\n// Gemini поддерживает: image/jpeg, image/png, image/webp, image/heic, image/heif, application/pdf\n\nconst item = $input.item;\nif (!item.binary || !item.binary.data) {\n  throw new Error('No binary data found on input item');\n}\n\n// 1) Пытаемся взять MIME из Telegram-сообщения (самый надёжный источник)\n//    Подставь правильный путь до message.document.mime_type в твоём графе.\n//    Обычно это что-то вроде $('Telegram Trigger').item.json.message.document.mime_type\nlet tgMime = '';\ntry {\n  const msg = $('Telegram Trigger').item.json.message\n           || $('Telegram Trigger').item.json.callback_query?.message;\n  tgMime = msg?.document?.mime_type\n        || msg?.photo?.[0]?.mime_type\n        || '';\n} catch (e) {\n  tgMime = '';\n}\n\n// 2) Если Telegram не подсказал — определяем по расширению имени файла\nconst fileName = item.binary.data.fileName || '';\nconst ext = fileName.split('.').pop().toLowerCase();\nconst extMap = {\n  'pdf':  'application/pdf',\n  'jpg':  'image/jpeg',\n  'jpeg': 'image/jpeg',\n  'png':  'image/png',\n  'webp': 'image/webp',\n};\n\n// 3) Определяем финальный MIME\nlet finalMime = tgMime && tgMime !== 'application/octet-stream'\n  ? tgMime\n  : (extMap[ext] || '');\n\n// 4) Если всё равно не определили — магические байты (file signature)\nif (!finalMime) {\n  const buf = Buffer.from(item.binary.data.data, 'base64');\n  if (buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46) {\n    finalMime = 'application/pdf';        // %PDF\n  } else if (buf[0] === 0xFF && buf[1] === 0xD8) {\n    finalMime = 'image/jpeg';             // JPEG SOI\n  } else if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) {\n    finalMime = 'image/png';              // \\x89PNG\n  } else {\n    throw new Error(`Cannot determine supported MIME type. File: ${fileName}`);\n  }\n}\n\n// 5) Принудительно перезаписываем MIME на бинарнике\nitem.binary.data.mimeType = finalMime;\nitem.binary.data.fileType = finalMime.split('/')[0];\n\nreturn item;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -14368,
+        3984
+      ],
+      "id": "78efe772-8a81-45b8-a660-e423794ddad8",
+      "name": "Fix MIME"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// ============================================================\n// WF-02 → WF-04 bridge: упаковываем бинарник в base64\n// Run mode: Once for Each Item\n// \n// ВАЖНО: поправь имя ноды 'Download File' ниже на то, как\n// у тебя в WF-02 называется нода, которая скачала бинарник\n// с Telegram (обычно HTTP Request с Response=File).\n// ============================================================\n\nconst DOWNLOAD_NODE_NAME = 'Download File'; // ← поправь под свою ноду\n\n// Достаём исходный бинарник из ноды скачивания\nlet srcBinary;\ntry {\n  srcBinary = $(DOWNLOAD_NODE_NAME).item.binary;\n} catch (e) {\n  throw new Error(`Pack File: cannot find binary on node \"${DOWNLOAD_NODE_NAME}\". Fix the node name in this script.`);\n}\n\nif (!srcBinary || !srcBinary.data || !srcBinary.data.data) {\n  throw new Error(`Pack File: no binary.data on node \"${DOWNLOAD_NODE_NAME}\"`);\n}\n\n// MIME из binary (уже починен нодой Fix MIME)\nconst mimeType = srcBinary.data.mimeType || 'application/octet-stream';\n\n// Конвертируем buffer/base64 в base64-строку\nlet fileBase64;\nif (typeof srcBinary.data.data === 'string') {\n  // В N8N данные обычно уже хранятся в base64\n  fileBase64 = srcBinary.data.data;\n} else {\n  // На всякий случай — если Buffer\n  fileBase64 = Buffer.from(srcBinary.data.data).toString('base64');\n}\n\n// Пробрасываем все поля из парсинга + добавляем base64\nreturn {\n  json: {\n    ...$json,\n    fileBase64,\n    mimeType\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -13136,
+        3984
+      ],
+      "id": "badab26c-49e0-4da7-a0a0-289e96fcfe22",
+      "name": "Pack File for WF-04"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// ============================================================\n// Universal MIME Fixer for Gemini Vision / Gemini Audio\n// Run mode: Once for Each Item\n// Поддерживает: JPEG, PNG, WebP, PDF, OGG, MP3, WAV, M4A\n// ============================================================\n\nconst item = $input.item;\nif (!item.binary || !item.binary.data) {\n  throw new Error('No binary data found on input item');\n}\n\n// 1) Telegram — самый надёжный источник MIME\nlet tgMime = '';\ntry {\n  const msg = $('Telegram Trigger').item.json.message\n           || $('Telegram Trigger').item.json.callback_query?.message;\n  tgMime = msg?.document?.mime_type\n        || msg?.photo?.[0]?.mime_type\n        || msg?.voice?.mime_type\n        || msg?.audio?.mime_type\n        || '';\n} catch (e) {\n  tgMime = '';\n}\n\n// 2) Фолбэк: по расширению в fileName\nconst fileName = item.binary.data.fileName || '';\nconst ext = fileName.split('.').pop().toLowerCase();\nconst extMap = {\n  // Images & docs\n  'pdf':  'application/pdf',\n  'jpg':  'image/jpeg',\n  'jpeg': 'image/jpeg',\n  'png':  'image/png',\n  'webp': 'image/webp',\n  // Audio (Telegram voice = .oga/.ogg Opus)\n  'ogg':  'audio/ogg',\n  'oga':  'audio/ogg',\n  'opus': 'audio/ogg',\n  'mp3':  'audio/mpeg',\n  'wav':  'audio/wav',\n  'm4a':  'audio/mp4',\n  'aac':  'audio/aac',\n  'flac': 'audio/flac',\n};\n\nlet finalMime = tgMime && tgMime !== 'application/octet-stream'\n  ? tgMime\n  : (extMap[ext] || '');\n\n// 3) Magic bytes — последний рубеж\nif (!finalMime) {\n  const buf = Buffer.from(item.binary.data.data, 'base64');\n\n  if (buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46) {\n    finalMime = 'application/pdf';                    // %PDF\n  } else if (buf[0] === 0xFF && buf[1] === 0xD8) {\n    finalMime = 'image/jpeg';                         // JPEG SOI\n  } else if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) {\n    finalMime = 'image/png';                          // \\x89PNG\n  } else if (buf[0] === 0x4F && buf[1] === 0x67 && buf[2] === 0x67 && buf[3] === 0x53) {\n    finalMime = 'audio/ogg';                          // OggS\n  } else if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46) {\n    // RIFF контейнер — смотрим следом\n    if (buf[8] === 0x57 && buf[9] === 0x41 && buf[10] === 0x56 && buf[11] === 0x45) {\n      finalMime = 'audio/wav';                        // WAVE\n    } else if (buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) {\n      finalMime = 'image/webp';                       // WEBP\n    }\n  } else if (buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33) {\n    finalMime = 'audio/mpeg';                         // MP3 ID3\n  } else if (buf[0] === 0xFF && (buf[1] & 0xE0) === 0xE0) {\n    finalMime = 'audio/mpeg';                         // MP3 frame sync\n  }\n\n  if (!finalMime) {\n    throw new Error(`Cannot determine MIME. File: ${fileName}, bytes: ${buf.slice(0, 8).toString('hex')}`);\n  }\n}\n\n// 4) Валидация поддерживаемых Gemini типов\nconst geminiSupported = [\n  'image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif',\n  'application/pdf',\n  'audio/wav', 'audio/mpeg', 'audio/aiff', 'audio/aac', 'audio/ogg', 'audio/flac', 'audio/mp4'\n];\nif (!geminiSupported.includes(finalMime)) {\n  throw new Error(`Unsupported MIME for Gemini: ${finalMime}`);\n}\n\n// 5) Перезаписываем\nitem.binary.data.mimeType = finalMime;\nitem.binary.data.fileType = finalMime.split('/')[0];\n\nreturn item;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -15056,
+        4240
+      ],
+      "id": "e1d04b6d-32b0-414d-825e-145b13b09901",
+      "name": "Fix MIME1"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Start": {
+      "main": [
+        [
+          {
+            "node": "Input Validator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Input Validator": {
+      "main": [
+        [
+          {
+            "node": "Type Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Type Switch": {
+      "main": [
+        [
+          {
+            "node": "MIME Check",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "TG Get File (Voice)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Pass Text",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MIME Check": {
+      "main": [
+        [
+          {
+            "node": "MIME Route",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MIME Route": {
+      "main": [
+        [
+          {
+            "node": "MIME Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MIME Switch": {
+      "main": [
+        [
+          {
+            "node": "Return Error",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "TG Get File (Doc)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TG Get File (Doc)": {
+      "main": [
+        [
+          {
+            "node": "Download File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download File": {
+      "main": [
+        [
+          {
+            "node": "Fix MIME",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Vision": {
+      "main": [
+        [
+          {
+            "node": "Parse Doc",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Doc": {
+      "main": [
+        [
+          {
+            "node": "Doc Route",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Doc Route": {
+      "main": [
+        [
+          {
+            "node": "Doc Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Doc Switch": {
+      "main": [
+        [
+          {
+            "node": "Return Error",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Pack File for WF-04",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Drive URL": {
+      "main": [
+        [
+          {
+            "node": "Call  WF05",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TG Get File (Voice)": {
+      "main": [
+        [
+          {
+            "node": "Download Voice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Voice": {
+      "main": [
+        [
+          {
+            "node": "Fix MIME1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini STT": {
+      "main": [
+        [
+          {
+            "node": "Extract Voice Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Voice Text": {
+      "main": [
+        [
+          {
+            "node": "Voice Route",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Voice Route": {
+      "main": [
+        [
+          {
+            "node": "Voice Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Voice Switch": {
+      "main": [
+        [
+          {
+            "node": "Return Error",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Gemini Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pass Text": {
+      "main": [
+        [
+          {
+            "node": "Gemini Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Text": {
+      "main": [
+        [
+          {
+            "node": "Parse Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Text": {
+      "main": [
+        [
+          {
+            "node": "Text Route",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Text Route": {
+      "main": [
+        [
+          {
+            "node": "Text Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Text Switch": {
+      "main": [
+        [
+          {
+            "node": "Return Error",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Call  WF05",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Return": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Return Error": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call WF04": {
+      "main": [
+        [
+          {
+            "node": "Merge Drive URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call  WF05": {
+      "main": [
+        [
+          {
+            "node": "Build Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fix MIME": {
+      "main": [
+        [
+          {
+            "node": "Gemini Vision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pack File for WF-04": {
+      "main": [
+        [
+          {
+            "node": "Call WF04",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fix MIME1": {
+      "main": [
+        [
+          {
+            "node": "Gemini STT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "2aff006f-4b25-4c13-9137-a48e16f02397",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "cca9a5f9532f6dbec2cbee648be68fdaa6fd41fb5d6f078ff1e440e4d1b9b1c5"
+  },
+  "id": "gjRRIlXRSI2xHpPf",
+  "tags": []
+}

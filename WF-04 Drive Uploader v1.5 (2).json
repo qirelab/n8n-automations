@@ -1,0 +1,667 @@
+{
+  "name": "WF-04 Drive Uploader v1.5",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "90b26d9f-d7ca-4d81-a347-262ca6c0050d",
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -2112,
+        4848
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// ============================================================\n// WF-04 [1.5] Normalize Binary — v1.2\n// Run mode: Once for Each Item\n// Cherry-picked from Invoices_11 (legacy workflow).\n//\n// Цель: унифицировать входной бинарник под стандартный ключ 'file',\n//       независимо от того, как его назвала предыдущая нода.\n//\n// Поддерживает 2 контракта входа:\n//   A) BINARY  — $input.item.binary.* уже существует. Ищем первый\n//                ключ с поддерживаемым MIME (часто это 'data', 'file',\n//                'attachment_0' и т.п.)\n//   B) BASE64  — $json.fileBase64 + $json.mimeType (ручной тест)\n//\n// Выход: item.binary.file = {data, mimeType, fileName}\n//        + json обогащается _binaryKey, _mimeType, _origFileName\n// ============================================================\n\nconst item = $input.item;\nconst itemJson = item.json || {};\nconst itemBinary = item.binary || {};\n\nconst ALLOWED_MIME = [\n  'application/pdf',\n  'image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif', 'image/tiff',\n  'image/heic', 'image/heif'\n];\n\n// --- Контракт A: уже есть binary ---\nconst existingKey = Object.keys(itemBinary).find(k => {\n  const mime = itemBinary[k]?.mimeType || '';\n  return ALLOWED_MIME.some(a => mime.includes(a));\n});\n\nif (existingKey) {\n  const fileObj = itemBinary[existingKey];\n  return {\n    json: {\n      ...itemJson,\n      _binaryKey: 'file',\n      _mimeType: fileObj.mimeType || 'application/pdf',\n      _origFileName: fileObj.fileName || ''\n    },\n    binary: { file: fileObj }\n  };\n}\n\n// --- Контракт B: base64 в json ---\nif (itemJson.fileBase64) {\n  const mime = itemJson.mimeType || 'application/pdf';\n  const buffer = Buffer.from(itemJson.fileBase64, 'base64');\n  const origName = itemJson.originalFileName || 'upload.bin';\n  return {\n    json: {\n      ...itemJson,\n      _binaryKey: 'file',\n      _mimeType: mime,\n      _origFileName: origName\n    },\n    binary: {\n      file: await this.helpers.prepareBinaryData(buffer, origName, mime)\n    }\n  };\n}\n\n// --- Ничего не пришло ---\nthrow new Error(\n  'WF-04: no usable file data. Neither binary (with allowed MIME) ' +\n  'nor json.fileBase64. ' +\n  'Binary keys: [' + Object.keys(itemBinary).join(',') + '], ' +\n  'Binary MIMEs: [' + Object.keys(itemBinary).map(k => itemBinary[k]?.mimeType || '?').join(',') + '], ' +\n  'JSON keys: [' + Object.keys(itemJson).join(',') + ']'\n);\n"
+      },
+      "id": "0f1df486-4493-4003-9b18-ab0f8da16153",
+      "name": "Normalize Binary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1888,
+        4848
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// ============================================================\n// WF-04 [2] Generate Filename — v1.2\n// Run mode: Once for Each Item\n// ============================================================\n\nconst item = $input.item;\nconst itemJson = item.json || {};\nconst itemBinary = item.binary || {};\nconst fields = itemJson.fields || itemJson;\n\nconst translitMap = {\n  'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ё':'yo','ж':'zh',\n  'з':'z','и':'i','й':'j','к':'k','л':'l','м':'m','н':'n','о':'o',\n  'п':'p','р':'r','с':'s','т':'t','у':'u','ф':'f','х':'h','ц':'ts',\n  'ч':'ch','ш':'sh','щ':'sch','ъ':'','ы':'y','ь':'','э':'e','ю':'yu','я':'ya',\n  'А':'A','Б':'B','В':'V','Г':'G','Д':'D','Е':'E','Ж':'Zh','З':'Z',\n  'И':'I','К':'K','Л':'L','М':'M','Н':'N','О':'O','П':'P','Р':'R',\n  'С':'S','Т':'T','У':'U','Ф':'F','Х':'H','Ц':'Ts','Ч':'Ch','Ш':'Sh',\n  'Щ':'Sch','Ъ':'','Ы':'Y','Ь':'','Э':'E','Ю':'Yu','Я':'Ya'\n};\n\nfunction translit(str) {\n  return (str || 'unknown')\n    .split('')\n    .map(c => translitMap[c] !== undefined ? translitMap[c] : c)\n    .join('')\n    .toLowerCase()\n    .replace(/[^a-z0-9_\\-\\.]/g, '_')\n    .replace(/_+/g, '_')\n    .replace(/^_|_$/g, '');\n}\n\nconst resolvedMime = itemJson._mimeType || 'application/pdf';\n\nlet year, month;\nconst docDate = fields.docDate || '';\nconst dateParts = docDate.split('.');\nif (dateParts.length === 3 && dateParts[2] && dateParts[1]) {\n  month = dateParts[1].padStart(2, '0');\n  year = dateParts[2];\n} else {\n  const now = new Date();\n  month = String(now.getMonth() + 1).padStart(2, '0');\n  year = String(now.getFullYear());\n}\nconst yearMonth = `${year}.${month}`;\n\nconst counterpartySlug = translit(fields.counterparty || 'unknown').slice(0, 30) || 'unknown';\nconst rawAmount = String(fields.rawAmount || fields.amount || '0').replace(/[^0-9.]/g, '') || '0';\n\nlet ext = 'pdf';\nif (resolvedMime.includes('png')) ext = 'png';\nelse if (resolvedMime.includes('jpeg') || resolvedMime.includes('jpg')) ext = 'jpg';\nelse if (resolvedMime.includes('webp')) ext = 'webp';\nelse if (resolvedMime.includes('tiff')) ext = 'tif';\nelse if (resolvedMime.includes('gif')) ext = 'gif';\nelse if (resolvedMime.includes('pdf')) ext = 'pdf';\n\nconst fileName = `${yearMonth}_${counterpartySlug}_${rawAmount}.${ext}`;\nconst subFolder = fields.status === 'Поступление' ? 'income' : 'outcome';\n\nconst updatedBinary = itemBinary.file\n  ? { file: { ...itemBinary.file, fileName, mimeType: resolvedMime } }\n  : itemBinary;\n\nreturn {\n  json: {\n    ...itemJson,\n    fileName,\n    yearMonth,\n    subFolder,\n    fileExt: ext,\n    resolvedMime\n  },\n  binary: updatedBinary\n};\n"
+      },
+      "id": "1a6554d0-2865-44f9-996f-70913fd3b6ab",
+      "name": "Generate Filename",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1680,
+        4848
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "fileFolder",
+        "queryString": "={{ $json.yearMonth }}",
+        "returnAll": true,
+        "filter": {
+          "folderId": {
+            "__rl": true,
+            "value": "={{ $env.GOOGLE_DRIVE_ROOT_ID }}",
+            "mode": "id"
+          },
+          "whatToSearch": "folders"
+        },
+        "options": {}
+      },
+      "id": "881dc242-04b6-4629-b6d6-83af7c9fd764",
+      "name": "Search Year-Month Folder",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -1456,
+        4848
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "S9QNJad2kfoTbu9F",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-ym-exists",
+              "leftValue": "={{ $json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "5856e6a6-0f09-4214-901a-f4596e951034",
+      "name": "Year-Month Folder Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1232,
+        4848
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "folder",
+        "name": "={{ $('Generate Filename').item.json.yearMonth }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_DRIVE_ROOT_ID }}",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "9741346d-4a0e-4f50-8301-60bf561a96fa",
+      "name": "Create Year-Month Folder",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -1008,
+        5008
+      ],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "S9QNJad2kfoTbu9F",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const yearMonthFolderId = $json.id;\nif (!yearMonthFolderId) {\n  throw new Error('WF-04: failed to resolve year-month folder id');\n}\nconst srcBinary = $('Generate Filename').item.binary;\nreturn {\n  json: { ...$json, yearMonthFolderId },\n  binary: srcBinary\n};\n"
+      },
+      "id": "627a968e-f83c-4269-a481-1b55021b8a99",
+      "name": "Set YearMonth Folder ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -800,
+        4848
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "fileFolder",
+        "queryString": "={{ $('Generate Filename').item.json.subFolder }}",
+        "returnAll": true,
+        "filter": {
+          "folderId": {
+            "__rl": true,
+            "value": "={{ $json.yearMonthFolderId }}",
+            "mode": "id"
+          },
+          "whatToSearch": "folders"
+        },
+        "options": {}
+      },
+      "id": "3b069f66-2893-452c-af55-9122b6c4d505",
+      "name": "Search Sub Folder",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -576,
+        4848
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "S9QNJad2kfoTbu9F",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-sub-exists",
+              "leftValue": "={{ $json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e8f0d1bb-3534-477a-9cb5-63a966ad32cf",
+      "name": "Sub Folder Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -352,
+        4848
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "folder",
+        "name": "={{ $('Generate Filename').item.json.subFolder }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "={{ $('Set YearMonth Folder ID').item.json.yearMonthFolderId }}",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "7aec0dac-bf40-4488-b44e-85c9ef4a4172",
+      "name": "Create Sub Folder",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -128,
+        5008
+      ],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "S9QNJad2kfoTbu9F",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const subFolderId = $json.id;\nif (!subFolderId) {\n  throw new Error('WF-04: failed to resolve sub-folder id');\n}\nconst srcBinary = $('Normalize Binary').item.binary;\nconst genJson = $('Generate Filename').item.json;\nreturn {\n  json: {\n    ...$json,\n    subFolderId,\n    fileName: genJson.fileName,\n    yearMonth: genJson.yearMonth,\n    subFolder: genJson.subFolder,\n    resolvedMime: genJson.resolvedMime\n  },\n  binary: srcBinary\n};\n"
+      },
+      "id": "9513415d-9dbf-45f4-9809-cd70527cc593",
+      "name": "Set Sub Folder ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        96,
+        4848
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "fileFolder",
+        "queryString": "={{ $json.fileName }}",
+        "limit": 1,
+        "filter": {
+          "folderId": {
+            "__rl": true,
+            "value": "={{ $json.subFolderId }}",
+            "mode": "id"
+          },
+          "whatToSearch": "files"
+        },
+        "options": {}
+      },
+      "id": "65d0ce9a-e4d7-4d5c-b4ab-2ee8955d5df8",
+      "name": "Check File Exists",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        320,
+        4848
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "S9QNJad2kfoTbu9F",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-file-exists",
+              "leftValue": "={{ $json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "db62a677-6f93-4b60-8a0d-05dbc8f4f241",
+      "name": "File Already Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        528,
+        4848
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// ============================================================\n// WF-04 [Return Existing File] — v1.5\n// Run mode: Once for Each Item\n//\n// Ветка дедупликации: файл уже есть в папке — возвращаем его URL.\n// $json здесь = output от Check File Exists (Google Drive search),\n// где id это корректный file id.\n// ============================================================\n\nconst existing = $json;\nconst fileId = existing.id || '';\nconst webViewLink = existing.webViewLink\n  || (fileId ? `https://drive.google.com/file/d/${fileId}/view?usp=drive_link` : '');\n\nreturn {\n  json: {\n    driveUrl: webViewLink,\n    driveFileId: fileId,\n    fileName: existing.name || $('Set Sub Folder ID').item.json.fileName || '',\n    deduplicated: true\n  }\n};\n"
+      },
+      "id": "29d41d51-e523-4290-8c93-7d495da904c8",
+      "name": "Return Existing File",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        752,
+        4688
+      ]
+    },
+    {
+      "parameters": {
+        "inputDataFieldName": "file",
+        "name": "={{ $('Set Sub Folder ID').item.json.fileName }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "={{ $('Set Sub Folder ID').item.json.subFolderId }}",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "5b25947a-2014-4a7a-8bc5-a5e02d18940e",
+      "name": "Upload File",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        976,
+        5008
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "S9QNJad2kfoTbu9F",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "share",
+        "fileId": {
+          "__rl": true,
+          "value": "={{ $json.id }}",
+          "mode": "id"
+        },
+        "permissionsUi": {
+          "permissionsValues": {
+            "role": "reader",
+            "type": "anyone"
+          }
+        },
+        "options": {}
+      },
+      "id": "8fb2fe1d-0a28-4bcd-80e5-7408b1e0005f",
+      "name": "Make File Readable",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        1200,
+        5008
+      ],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "S9QNJad2kfoTbu9F",
+          "name": "Google Drive account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// ============================================================\n// WF-04 [Build Return Payload] — v1.5\n// Run mode: Once for Each Item\n//\n// Bugfix v1.5: берём file id/link строго из ноды Upload File.\n// Предыдущая нода (Make File Readable) — share-операция, возвращает\n// permission-объект { id: 'anyoneWithLink', type: 'anyone' } —\n// это НЕ file id, из-за чего в URL попадал мусор.\n// ============================================================\n\nconst upload = $('Upload File').item.json;\nconst fileId = upload.id || '';\nconst fileName = upload.name || $('Set Sub Folder ID').item.json.fileName || '';\n\n// webViewLink приходит от Google Drive upload если ответ включает этот field.\n// Фолбэк: собираем URL вручную с usp=drive_link для корректного UI-поведения.\nconst webViewLink = upload.webViewLink\n  || (fileId ? `https://drive.google.com/file/d/${fileId}/view?usp=drive_link` : '');\n\nreturn {\n  json: {\n    driveUrl: webViewLink,\n    driveFileId: fileId,\n    fileName: fileName,\n    deduplicated: false\n  }\n};\n"
+      },
+      "id": "2a65b885-25b9-4938-91b6-fc8ce9ee32ea",
+      "name": "Build Return Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1408,
+        5008
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## WF-04 Drive Uploader v1.5\n\n**Bugfix от v1.4:**\n- Build Return Payload теперь берёт file id из ноды Upload File.\n  Раньше брал $json.id, но там после Make File Readable лежит permission id 'anyoneWithLink' — из-за этого URL ломался.\n- Оба return-пути (upload + dedup) теперь отдают ссылку вида https://drive.google.com/file/d/{id}/view?usp=drive_link\n\n**От v1.4:**\n- alwaysOutputData=true на Search Year-Month и Search Sub Folder\n\n**От v1.3:**\n- Restore Binary перед Upload File\n\n**От v1.1:**\n1. Normalize Binary (whitelist MIME)\n2. Check File Exists (дедупликация)\n3. Идемпотентный граф\n\n**Output:** { driveUrl, driveFileId, fileName, deduplicated: true|false }",
+        "height": 460,
+        "width": 420
+      },
+      "id": "b36a78cc-d665-4105-bfa2-849bd1f1701f",
+      "name": "Sticky Note — Changelog",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -2112,
+        4352
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// ============================================================\n// WF-04 [Restore Binary] — v1.3\n// Run mode: Once for Each Item\n//\n// Зачем: Google Drive search-ноды (Check File Exists и пр.) не\n// пропускают binary через себя. Перед Upload File нужно его\n// восстановить из Normalize Binary.\n// ============================================================\n\nconst srcBinary = $('Normalize Binary').item.binary;\nconst ctx = $('Set Sub Folder ID').item.json;\n\nif (!srcBinary || !srcBinary.file) {\n  throw new Error('Restore Binary: no binary.file on Normalize Binary output');\n}\n\nreturn {\n  json: {\n    ...ctx,\n    ...$json\n  },\n  binary: srcBinary\n};\n"
+      },
+      "id": "d7174dad-65a5-4212-a688-c4b4176cba05",
+      "name": "Restore Binary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        752,
+        4928
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Normalize Binary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Binary": {
+      "main": [
+        [
+          {
+            "node": "Generate Filename",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Filename": {
+      "main": [
+        [
+          {
+            "node": "Search Year-Month Folder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Year-Month Folder": {
+      "main": [
+        [
+          {
+            "node": "Year-Month Folder Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Year-Month Folder Exists?": {
+      "main": [
+        [
+          {
+            "node": "Set YearMonth Folder ID",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create Year-Month Folder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Year-Month Folder": {
+      "main": [
+        [
+          {
+            "node": "Set YearMonth Folder ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set YearMonth Folder ID": {
+      "main": [
+        [
+          {
+            "node": "Search Sub Folder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Sub Folder": {
+      "main": [
+        [
+          {
+            "node": "Sub Folder Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sub Folder Exists?": {
+      "main": [
+        [
+          {
+            "node": "Set Sub Folder ID",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create Sub Folder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Sub Folder": {
+      "main": [
+        [
+          {
+            "node": "Set Sub Folder ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Sub Folder ID": {
+      "main": [
+        [
+          {
+            "node": "Check File Exists",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check File Exists": {
+      "main": [
+        [
+          {
+            "node": "File Already Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "File Already Exists?": {
+      "main": [
+        [
+          {
+            "node": "Return Existing File",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Restore Binary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload File": {
+      "main": [
+        [
+          {
+            "node": "Make File Readable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Make File Readable": {
+      "main": [
+        [
+          {
+            "node": "Build Return Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore Binary": {
+      "main": [
+        [
+          {
+            "node": "Upload File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "15e56933-83d2-4056-af83-f64b76a146d7",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "cca9a5f9532f6dbec2cbee648be68fdaa6fd41fb5d6f078ff1e440e4d1b9b1c5"
+  },
+  "id": "6PExh9DJ4hGtA3Ys",
+  "tags": []
+}

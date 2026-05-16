@@ -1,0 +1,588 @@
+{
+  "name": "WF-05 Sheets Writer",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "78599a35-80b9-46d8-8b44-679d2da804bc",
+      "typeVersion": 1.1,
+      "name": "Start",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "position": [
+        -6496,
+        2576
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// ============================================================\n// WF-05 [1] Resolve Current Period (YYYY.MM)\n// Приоритет: docDate из входа → текущая дата\n// ============================================================\n\nconst itemJson = $json;\nlet year, month;\n\nconst docDate = itemJson.docDate || '';\nconst parts = docDate.split('.');\nif (parts.length === 3 && parts[2] && parts[1]) {\n  month = parts[1].padStart(2, '0');\n  year = parts[2];\n} else {\n  const now = new Date();\n  month = String(now.getMonth() + 1).padStart(2, '0');\n  year = String(now.getFullYear());\n}\n\nconst periodLabel = `${year}.${month}`;\n\n// Нормализация страны (дефолт Беларусь)\nconst rawCountry = String(itemJson.country || '').trim();\nconst country = rawCountry === 'Польша' ? 'Польша' : 'Беларусь';\n\nreturn {\n  json: {\n    ...itemJson,\n    periodLabel,\n    periodYear: year,\n    periodMonth: month,\n    country\n  }\n};\n"
+      },
+      "id": "3f1e9150-dcd8-4688-919a-db7161ebdc9f",
+      "name": "Resolve Period",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -6240,
+        2576
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Счётчики",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "Период",
+              "lookupValue": "={{ $json.periodLabel }}"
+            },
+            {
+              "lookupColumn": "Страна",
+              "lookupValue": "={{ $json.country }}"
+            }
+          ]
+        },
+        "options": {
+          "returnFirstMatch": true
+        }
+      },
+      "id": "b4b64ff4-162a-48c2-991a-5ce2d24819b3",
+      "name": "Get Counter Row",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -6016,
+        2576
+      ],
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "rnvzuybEF91V5uQQ",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-counter-exists",
+              "leftValue": "={{ $json.Период }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "8a6eaae0-adc1-4b2f-ba72-d7cb7bdb6e03",
+      "name": "Counter Row Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -5792,
+        2576
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Счётчики",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Период": "={{ $('Resolve Period').item.json.periodLabel }}",
+            "Страна": "={{ $('Resolve Period').item.json.country }}",
+            "Поступления (0.XXXX)": "=0",
+            "Выбытия (1.XXXX)": "=0"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Период",
+              "displayName": "Период",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Страна",
+              "displayName": "Страна",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Поступления (0.XXXX)",
+              "displayName": "Поступления (0.XXXX)",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Выбытия (1.XXXX)",
+              "displayName": "Выбытия (1.XXXX)",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "492be96f-f528-4f60-b20d-6a4e1cf2ea96",
+      "name": "Create Counter Row",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -5584,
+        2736
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "rnvzuybEF91V5uQQ",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// ============================================================\n// WF-05 [3] ID Generator + Row Builder (v2.4)\n// Изменения v2.4: добавлен invoice_number → колонка M реестра\n// ============================================================\n\nconst input = $('Resolve Period').item.json;\n\n// counterRow: либо из Get Counter Row (true-ветка), либо только что создана (false-ветка)\nlet counterRow;\ntry {\n  counterRow = $('Counter Row Exists?').item.json;\n} catch (e) {\n  counterRow = null;\n}\nif (!counterRow || !counterRow['Период']) {\n  counterRow = {\n    'Период': input.periodLabel,\n    'Страна': input.country || 'Беларусь',\n    'Поступления (0.XXXX)': 0,\n    'Выбытия (1.XXXX)': 0\n  };\n}\n\n// --- Тип операции (0 = Поступление, 1 = Выбытие) ---\nconst typeCode = input.status === 'Поступление' ? 0 : 1;\nconst counterKey = typeCode === 0 ? 'Поступления (0.XXXX)' : 'Выбытия (1.XXXX)';\n\n// --- Инкремент счётчика ---\nconst currentCount = parseInt(counterRow[counterKey] || '0', 10) || 0;\nconst newCount = currentCount + 1;\nconst nrId = `${typeCode}.${String(newCount).padStart(4, '0')}`;\n\n// --- UUID v4 ---\nconst uuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {\n  const r = Math.random() * 16 | 0;\n  const v = c === 'x' ? r : (r & 0x3 | 0x8);\n  return v.toString(16);\n});\n\n// --- Обновлённые значения счётчиков ---\nconst newIncome  = typeCode === 0 ? newCount : parseInt(counterRow['Поступления (0.XXXX)'] || '0', 10);\nconst newOutcome = typeCode === 1 ? newCount : parseInt(counterRow['Выбытия (1.XXXX)']     || '0', 10);\n\n// --- Обработка суммы (v2.3) ---\nconst rawAmt = input.amount;\nlet absAmount = 0;\nif (typeof rawAmt === 'number') {\n  absAmount = Math.abs(rawAmt);\n} else if (typeof rawAmt === 'string' && rawAmt.trim()) {\n  const parsed = parseFloat(rawAmt.replace(/[^0-9.,\\-]/g, '').replace(',', '.'));\n  absAmount = Math.abs(isNaN(parsed) ? 0 : parsed);\n}\n\nconst signedAmount = typeCode === 0 ? absAmount : -absAmount;\nconst currency = String(input.currency || '').toUpperCase();\n\n// === v2.4: invoice_number ===\nconst invoiceNumber = String(input.invoice_number || '').trim();\n\n// --- Сборка строки реестра (A–M видимые + L скрытый UUID) ---\nconst row = {\n  'Nr ID':              nrId,\n  'Статус':             input.status || '',\n  'Дата документа':     input.docDate || '',\n  'Контрагент':         input.counterparty || '',\n  'Дата оплаты':        input.payDate || '',\n  'Сумма':              signedAmount,\n  'Валюта':             currency,\n  'Статус оплаты':      input.payStatus || '',\n  'Страна':             input.country || 'Беларусь',\n  'Ссылка на документ': input.driveUrl || '',\n  'Описание AI':        input.aiDescription || '',\n  'UUID':               uuid,\n  'Номер инвойса':      invoiceNumber\n};\n\nreturn {\n  json: {\n    ...input,\n    nrId,\n    uuid,\n    invoiceNumber,\n    typeCode,\n    counterKey,\n    newCount,\n    newIncome,\n    newOutcome,\n    signedAmount,\n    currency,\n    registryRow: row\n  }\n};\n"
+      },
+      "id": "392f68e6-72e7-4b20-8f4e-a4f7f93b8d5a",
+      "name": "Generate Nr ID & Build Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -5360,
+        2576
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Реестр",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Nr ID": "={{ $json.registryRow['Nr ID'] }}",
+            "Статус": "={{ $json.registryRow['Статус'] }}",
+            "Дата документа": "={{ $json.registryRow['Дата документа'] }}",
+            "Контрагент": "={{ $json.registryRow['Контрагент'] }}",
+            "Дата оплаты": "={{ $json.registryRow['Дата оплаты'] }}",
+            "Сумма": "={{ $json.registryRow['Сумма'] }}",
+            "Валюта": "={{ $json.registryRow['Валюта'] }}",
+            "Статус оплаты": "={{ $json.registryRow['Статус оплаты'] }}",
+            "Страна": "={{ $json.registryRow['Страна'] }}",
+            "Ссылка на документ": "={{ $json.registryRow['Ссылка на документ'] }}",
+            "Описание AI": "={{ $json.registryRow['Описание AI'] }}",
+            "UUID": "={{ $json.registryRow['UUID'] }}",
+            "Номер инвойса": "={{ $json.registryRow['Номер инвойса'] }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Nr ID",
+              "displayName": "Nr ID",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Статус",
+              "displayName": "Статус",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Дата документа",
+              "displayName": "Дата документа",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Контрагент",
+              "displayName": "Контрагент",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Дата оплаты",
+              "displayName": "Дата оплаты",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Сумма",
+              "displayName": "Сумма",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Валюта",
+              "displayName": "Валюта",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Статус оплаты",
+              "displayName": "Статус оплаты",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Страна",
+              "displayName": "Страна",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Ссылка на документ",
+              "displayName": "Ссылка на документ",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Описание AI",
+              "displayName": "Описание AI",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "UUID",
+              "displayName": "UUID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Номер инвойса",
+              "displayName": "Номер инвойса",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "89d3fd8e-471e-423d-b230-81575ac25a97",
+      "name": "Append Row to Registry",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -5136,
+        2576
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "rnvzuybEF91V5uQQ",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Счётчики",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Период": "={{ $('Generate Nr ID & Build Row').item.json.periodLabel }}",
+            "Страна": "={{ $('Generate Nr ID & Build Row').item.json.country }}",
+            "Поступления (0.XXXX)": "={{ $('Generate Nr ID & Build Row').item.json.newIncome }}",
+            "Выбытия (1.XXXX)": "={{ $('Generate Nr ID & Build Row').item.json.newOutcome }}"
+          },
+          "matchingColumns": [
+            "Период",
+            "Страна"
+          ],
+          "schema": [
+            {
+              "id": "Период",
+              "displayName": "Период",
+              "required": true,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Страна",
+              "displayName": "Страна",
+              "required": true,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Поступления (0.XXXX)",
+              "displayName": "Поступления (0.XXXX)",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Выбытия (1.XXXX)",
+              "displayName": "Выбытия (1.XXXX)",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "55c5b01b-c2fd-4cab-a64a-a539559dc041",
+      "name": "Update Counter",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -4912,
+        2576
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "rnvzuybEF91V5uQQ",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// ============================================================\n// WF-05 [6] Confirmation Builder (v2.4)\n// Изменения v2.4: строка 🧾 invoice_number (только если не пустой)\n// ============================================================\n\nconst d = $('Generate Nr ID & Build Row').item.json;\n\n// --- Страна ---\nconst country = d.country || 'Беларусь';\nconst isPoland = (country === 'Польша');\n\n// Флаг страны\nconst flag = isPoland\n  ? '\\uD83C\\uDDF5\\uD83C\\uDDF1'  // 🇵🇱\n  : '\\uD83C\\uDDE7\\uD83C\\uDDFE'; // 🇧🇾\n\n// --- Путь Drive ---\nconst rootFolder = isPoland ? 'Poland' : 'Belarus';\nconst yearMonth  = d.periodLabel || '';\nconst subFolder  = d.status === 'Поступление' ? 'income' : 'outcome';\n\nconst driveLink = d.driveUrl\n  ? `\\n\\uD83D\\uDD17 [Ссылка на файл](${d.driveUrl})`\n  : '';\n\nconst folderHint = d.driveUrl\n  ? `\\n\\uD83D\\uDCC1 ${rootFolder}/${yearMonth}/${subFolder}/`\n  : '';\n\n// --- Сумма ---\nconst signedAmount = parseFloat(d.signedAmount);\nconst currency     = String(d.currency || '').toUpperCase();\nlet amountDisplay  = '\\u2014';\nif (!isNaN(signedAmount) && signedAmount !== 0) {\n  const sign = signedAmount >= 0 ? '+' : '-';\n  const abs  = Math.abs(signedAmount);\n  const formatted = Number.isInteger(abs) ? String(abs) : abs.toFixed(2);\n  amountDisplay = `${sign}${formatted}${currency ? ' ' + currency : ''}`;\n}\n\n// === v2.4: строка инвойса (только если поле не пустое) ===\nconst invoiceNumber = String(d.invoiceNumber || '').trim();\nconst invoiceLine   = invoiceNumber ? `\\n\\uD83E\\uDDFE ${invoiceNumber}` : '';\n\n// --- Шаблон подтверждения ---\nconst confirmationText =\n`\\u2705 Записано\n\n\\uD83D\\uDCCC ${d.nrId} | ${d.status || '\\u2014'}\n${flag} ${country}\n\\uD83D\\uDCC5 ${d.docDate || '\\u2014'}\n\\uD83C\\uDFE2 ${d.counterparty || '\\u2014'}${invoiceLine}\n\\uD83D\\uDCB0 ${amountDisplay} | ${d.payStatus || '\\u2014'}${folderHint}${driveLink}\n\n\\uD83D\\uDCAC ${d.aiDescription || ''}`;\n\nreturn {\n  json: {\n    nrId:             d.nrId,\n    uuid:             d.uuid,\n    chatId:           d.chatId || '',\n    confirmationText,\n    periodLabel:      d.periodLabel,\n    status:           d.status,\n    signedAmount,\n    currency,\n    country\n  }\n};\n"
+      },
+      "id": "f7e0f111-137f-4b1a-86d7-6281fb59d33f",
+      "name": "Build Confirmation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -4704,
+        2576
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Start": {
+      "main": [
+        [
+          {
+            "node": "Resolve Period",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Period": {
+      "main": [
+        [
+          {
+            "node": "Get Counter Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Counter Row": {
+      "main": [
+        [
+          {
+            "node": "Counter Row Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Counter Row Exists?": {
+      "main": [
+        [
+          {
+            "node": "Generate Nr ID & Build Row",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create Counter Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Counter Row": {
+      "main": [
+        [
+          {
+            "node": "Generate Nr ID & Build Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Nr ID & Build Row": {
+      "main": [
+        [
+          {
+            "node": "Append Row to Registry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append Row to Registry": {
+      "main": [
+        [
+          {
+            "node": "Update Counter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Counter": {
+      "main": [
+        [
+          {
+            "node": "Build Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "8c929e2f-3065-4fea-b6fd-da328fe87659",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "cca9a5f9532f6dbec2cbee648be68fdaa6fd41fb5d6f078ff1e440e4d1b9b1c5"
+  },
+  "id": "NRRRVVtjFQjGzdiR",
+  "tags": []
+}

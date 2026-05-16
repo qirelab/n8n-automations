@@ -1,0 +1,784 @@
+{
+  "name": "WF-06 Statement Parser",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## WF-06: Statement Parser (Слой 2, /vpsk)\n\n**Назначение.** Принимает банковскую выписку (PDF/DOCX), парсит её через Gemini Vision и заполняет лист «Банк» с `Статус сверки = PENDING`.\n\n**Контракт входа от WF-01 (POST /webhook/wf06-stmt):**\n```\n{ chatId, type, file_id, mime_type, file_size }\n```\n\n**Шаги:**\n1. Валидация входа\n2. Скачивание файла из Telegram\n3. MIME-нормализация (PDF / DOCX / JPEG / PNG)\n4. Gemini Vision → JSON-массив транзакций\n5. Идентификация банка/страны/периода (консенсус)\n6. Удаление старых строк за (Страна+Период+Банк) — NFR-17\n7. Append новых строк (Статус сверки = PENDING)\n8. Подтверждение в Telegram\n\n**Env-переменные:**\n- `TELEGRAM_BOT_TOKEN`\n- `GEMINI_API_KEY` (через credential)\n- `GOOGLE_SHEETS_ID`\n\n**Контракт выхода (HTTP-ответ для WF-01):**\n```\n{ ok: true|false, chatId, message }\n```\n\n**Лист «Банк»:** A=bank_id, B=Банк, C=Период, D=Страна, E=Статус, F=Дата документа, G=Контрагент, H=Дата оплаты, I=Сумма, J=Валюта, K=Описание, L=Номер инвойса (банк), M=Статус сверки, N=UUID реестра",
+        "height": 700,
+        "width": 540,
+        "color": 4
+      },
+      "id": "bd5b4ca7-8399-47fe-818e-6da4c08188c0",
+      "name": "Note Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -6512,
+        2256
+      ]
+    },
+    {
+      "parameters": {
+        "content": "### ⚠️ DOCX и Gemini\n\nGemini Files API поддерживает PDF нативно, но **DOCX напрямую не поддерживается**.\n\nЕсли при тестировании DOCX (Приорбанк BY) даёт пустой ответ или ошибку — добавь перед нодой **Gemini Vision** ноду **Extract from File** (или конвертер DOCX→PDF) и передай извлечённый текст в **Gemini Text** вместо Vision.\n\nДля MVP пробуем сначала бинарный путь — n8n langchain-нода может отправить DOCX как inlineData; в части кейсов Gemini корректно его обрабатывает.\n\nPDF (PKO Bank PL) работает через Vision стабильно.",
+        "height": 380,
+        "width": 420,
+        "color": 3
+      },
+      "id": "5692858c-81c4-4c81-a8c9-9ee723b6d446",
+      "name": "Note DOCX Warning",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -5952,
+        2256
+      ]
+    },
+    {
+      "parameters": {
+        "content": "### Атомарность записи (MVP)\n\nИспользуем последовательность: **Read → Filter → Clear → Append**.\n\nЕсли между Clear и Append произойдёт сбой — лист «Банк» останется без строк за этот (Страна+Период+Банк) триплет. Пользователь сможет повторить /vpsk и загрузить выписку заново.\n\nДля post-MVP можно перейти на batchUpdate через прямой вызов Sheets API (в одну транзакцию).",
+        "height": 320,
+        "width": 420,
+        "color": 5
+      },
+      "id": "e62fa0f6-64f9-48e7-858c-38fcd8d4d59e",
+      "name": "Note Atomicity",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -5520,
+        2256
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "wf06-stmt",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "762f5a5c-fd6f-4a98-a200-6b87cadfb3e5",
+      "name": "Start",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -6352,
+        3040
+      ],
+      "webhookId": "wf06-stmt"
+    },
+    {
+      "parameters": {
+        "jsCode": "// === WF-06 [1] Input Validator ===\n// Принимаем как Webhook ($json.body), так и Execute Workflow ($json напрямую)\nconst raw = $input.first().json;\nconst input = raw.body || raw;\n\nlet chatId = input.chatId || input.chat_id || input.chatID;\nif (chatId !== undefined && chatId !== null) chatId = String(chatId).trim();\n\nif (!chatId) {\n  return [{ json: {\n    chatId: '',\n    isError: true,\n    _route: 1,\n    errorText: '\\u26A0\\uFE0F WF-06: chatId отсутствует в запросе.'\n  }}];\n}\n\nconst type = String(input.type || '').toLowerCase().trim();\nconst fileId = String(input.file_id || '').trim();\nconst mime = String(input.mime_type || '').trim();\nconst fileSize = Number(input.file_size || 0);\n\n// Принимаем только document (PDF/DOCX). photo/voice/text для выписки не подходят.\nif (type !== 'document') {\n  return [{ json: {\n    chatId, isError: true, _route: 1,\n    errorText: '\\u26A0\\uFE0F Для выписки нужен файл PDF или DOCX. Фото и голос не поддерживаются.\\n\\nОтправьте /vpsk заново и приложите файл выписки.'\n  }}];\n}\n\nif (!fileId) {\n  return [{ json: {\n    chatId, isError: true, _route: 1,\n    errorText: '\\u26A0\\uFE0F Файл не получен. Попробуйте /vpsk снова.'\n  }}];\n}\n\n// Лимит Telegram bot — 20 МБ\nif (fileSize && fileSize > 20 * 1024 * 1024) {\n  return [{ json: {\n    chatId, isError: true, _route: 1,\n    errorText: '\\u26A0\\uFE0F Файл слишком большой (макс 20 МБ). Telegram Bot API имеет ограничение.'\n  }}];\n}\n\nreturn [{ json: {\n  chatId,\n  type,\n  file_id: fileId,\n  mime_type: mime,\n  file_size: fileSize,\n  isError: false,\n  _route: 0\n}}];"
+      },
+      "id": "186cb0be-73e6-4719-9828-de826109ebdf",
+      "name": "Input Validator",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -6128,
+        3040
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 2,
+        "output": "={{ $json._route }}"
+      },
+      "id": "4dc88de4-03bb-49ad-8ef8-5ad92433f13a",
+      "name": "Validation Switch",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        -5904,
+        3040
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/getFile",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "file_id",
+              "value": "={{ $json.file_id }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "363e8237-48a7-448e-9562-3ddea997e917",
+      "name": "TG Get File",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -5680,
+        2960
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/file/bot{{ $env.TELEGRAM_BOT_TOKEN }}/{{ $json.result.file_path }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "f41c680c-82c5-4bcc-993f-d5a2415a66e2",
+      "name": "Download File",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -5456,
+        2960
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// === WF-06 [2] Fix MIME — выписки (PDF / DOCX / JPEG / PNG) ===\n// Telegram присылает .docx / .pdf обычно с правильным mime_type, но иногда\n// application/octet-stream — поэтому делаем полную нормализацию (NFR-11).\n\nconst item = $input.item;\nif (!item.binary || !item.binary.data) {\n  throw new Error('WF-06 Fix MIME: no binary data on input item');\n}\n\n// 1) Сначала смотрим на mime, который пришёл от Telegram через WF-01\nlet tgMime = '';\ntry {\n  tgMime = String($('Input Validator').first().json.mime_type || '').toLowerCase();\n} catch (e) { tgMime = ''; }\n\n// 2) Расширение файла\nconst fileName = item.binary.data.fileName || '';\nconst ext = (fileName.split('.').pop() || '').toLowerCase();\nconst extMap = {\n  'pdf':  'application/pdf',\n  'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',\n  'jpg':  'image/jpeg',\n  'jpeg': 'image/jpeg',\n  'png':  'image/png',\n  'webp': 'image/webp'\n};\n\nlet finalMime = (tgMime && tgMime !== 'application/octet-stream') ? tgMime : (extMap[ext] || '');\n\n// 3) Magic bytes — последний рубеж\nif (!finalMime || finalMime === 'application/octet-stream') {\n  const buf = Buffer.from(item.binary.data.data, 'base64');\n  if (buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46) {\n    finalMime = 'application/pdf';                    // %PDF\n  } else if (buf[0] === 0x50 && buf[1] === 0x4B && buf[2] === 0x03 && buf[3] === 0x04) {\n    finalMime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';\n  } else if (buf[0] === 0xFF && buf[1] === 0xD8) {\n    finalMime = 'image/jpeg';\n  } else if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) {\n    finalMime = 'image/png';\n  } else {\n    throw new Error(`WF-06: cannot determine MIME. File: ${fileName}, bytes: ${buf.slice(0, 8).toString('hex')}`);\n  }\n}\n\n// 4) Допустимые типы для выписок\nconst allowed = [\n  'application/pdf',\n  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',\n  'image/jpeg', 'image/png'\n];\nif (!allowed.includes(finalMime)) {\n  throw new Error(`WF-06: unsupported MIME for statement: ${finalMime}. Поддерживается: PDF, DOCX, JPEG, PNG.`);\n}\n\n// 5) Перезаписываем\nitem.binary.data.mimeType = finalMime;\nitem.binary.data.fileType = finalMime.split('/')[0];\n\n// Прокидываем поля из Input Validator в json\nconst v = $('Input Validator').first().json;\nitem.json = {\n  ...item.json,\n  chatId: v.chatId,\n  _detectedMime: finalMime,\n  _origFileName: fileName\n};\n\nreturn item;"
+      },
+      "id": "6cfd7855-fcc5-4b74-871c-a83df4810f0d",
+      "name": "Fix MIME",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -5232,
+        2960
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "document",
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-2.5-flash",
+          "mode": "list",
+          "cachedResultName": "models/gemini-2.5-flash"
+        },
+        "text": "Ты — парсер банковских выписок. Проанализируй файл и извлеки ВСЕ транзакции.\n\nВерни ТОЛЬКО валидный JSON-массив объектов. Без пояснений. Без markdown-обёртки. Каждый объект — одна транзакция строго следующей структуры:\n\n{\n  \"bank\":           \"Priorbank\" | \"PKO_BP\",\n  \"country\":        \"Беларусь\" | \"Польша\",\n  \"period\":         \"YYYY.MM\",\n  \"status\":         \"Поступление\" | \"Выбытие\",\n  \"date_doc\":       \"DD.MM.YYYY\",\n  \"date_paid\":      \"DD.MM.YYYY\",\n  \"counterparty\":   \"Название контрагента\" | null,\n  \"amount\":         <число, ВСЕГДА положительное>,\n  \"currency\":       \"BYN\" | \"USD\" | \"EUR\" | \"PLN\",\n  \"invoice_number\": \"номер инвойса из назначения платежа или null\",\n  \"description\":    \"Полный текст описания из выписки\"\n}\n\n═══ ИДЕНТИФИКАЦИЯ БАНКА И СТРАНЫ ═══\n\nПриорбанк ОАО (Беларусь):\n  • Заголовок содержит «Приорбанк», «ОАО Приорбанк», БИК PJCBBY2X\n  • Колонки таблицы: Дата | N doc | Код | BIK | Счёт | Дебет | Кредит\n  • Описание операции — отдельной строкой ПОД основной строкой транзакции\n  • Валюта: всегда BYN\n  • Установи: bank=\"Priorbank\", country=\"Беларусь\"\n\nPKO Bank Polski SA (Польша):\n  • Заголовок содержит «PKO Bank Polski», «PKO BP», SWIFT BPKOPLPW\n  • Колонки: Data operacji | Data waluty | Typ transakcji | Opis | Kwota | Saldo\n  • Валюта в заголовке счёта: «Kwota w USD/PLN/EUR»\n  • Установи: bank=\"PKO_BP\", country=\"Польша\"\n\nВажно: bank, country, period — одинаковые для ВСЕХ транзакций одного документа.\n\n═══ ОПРЕДЕЛЕНИЕ status ═══\n\nПриорбанк BY:\n  • Кредит > 0 → \"Поступление\"\n  • Дебет  > 0 → \"Выбытие\"\n\nPKO Bank PL:\n  • Kwota > 0 (без минуса) → \"Поступление\"\n  • Kwota < 0 (со знаком \"-\") → \"Выбытие\"\n\n═══ ОПРЕДЕЛЕНИЕ date_doc и date_paid ═══\n\ndate_doc — дата операции:\n  • Приорбанк: колонка «Дата doc» (или первая дата в строке), уже в DD.MM.YYYY\n  • PKO Bank: колонка «Data operacji» в формате YYYY-MM-DD → конвертируй в DD.MM.YYYY\n\ndate_paid — дата валютирования:\n  • Приорбанк: совпадает с date_doc (отдельной колонки нет)\n  • PKO Bank: колонка «Data waluty» в формате YYYY-MM-DD → конвертируй в DD.MM.YYYY\n\nperiod = «YYYY.MM» из date_doc. Все транзакции одной выписки имеют одинаковый period.\n\n═══ amount — ВСЕГДА положительное число ═══\n\n  • Приорбанк: значение из Дебет ИЛИ Кредит — то, которое > 0\n  • PKO Bank: abs(Kwota) — модуль числа\n  • Десятичный разделитель — точка (.). Если в выписке запятая — замени на точку.\n  • Без пробелов, без символа валюты, без знака.\n\n═══ currency ═══\n\n  • Приорбанк BY: всегда \"BYN\"\n  • PKO Bank PL: из заголовка счёта в выписке («Kwota w USD/PLN/EUR») — одинаковая для всех транзакций документа\n\n═══ counterparty ═══\n\nПриорбанк:\n  • Из строки описания ПОД транзакцией\n  • Первая упомянутая организация: ООО, ОАО, ЗАО, ОДО, ЧУП, УП, ИП — с её наименованием\n  • ВНУТРЕННИЕ КОМИССИИ БАНКА (BIK получателя = PJCBBY2X + текст «KOMИC.», «Плата за») → counterparty = null И ИСКЛЮЧИ эту транзакцию из массива\n\nPKO Bank:\n  • Из поля «Opis»:\n    1) Если есть «Nazwa odbiorcy:» → значение оттуда\n    2) Иначе если есть «Nazwa nadawcy:» → значение оттуда\n    3) Иначе первая строка после «Adres:» если она содержит название\n    4) Если только адрес без названия → null\n\n═══ invoice_number — номер инвойса из назначения платежа ═══\n\nИскать в тексте назначения (description / Opis / строка под транзакцией):\n\nПриорбанк BY — типичные паттерны в строке описания:\n  • «ОПЛАТА ПО СЧЕТУ 127», «СЧ. № 15», «ПО СЧ.», «ДОГОВОР №» — брать следующее значение\n  • Если номер есть — нормализовать: убрать лишние пробелы вокруг разделителей\n  • Пример: «ОПЛАТА ПО СЧЕТУ 17 ОТ 20.04.2025» → invoice_number = \"17\"\n\nPKO Bank PL — типичные паттерны в поле Opis:\n  • «Tytuł:», «tytulem», «FV», «INV», «FS», «Nr faktury» — брать следующее значение\n  • Пример: «Tytuł: FV02012026» → invoice_number = \"FV02012026\"\n  • Пример: «tytulem: INV-2026-001» → invoice_number = \"INV-2026-001\"\n\nЕсли несколько номеров — взять первый (основной).\nНормализация: убрать пробелы вокруг разделителей (/, -, №), сохранить регистр.\nЕсли номер не найден → null.\n\n═══ ИСКЛЮЧЕНИЯ — НЕ включать в массив ═══\n\n  • Приорбанк: строки с «KOMИC. ДOX.» где BIK = PJCBBY2X (комиссии банка самому себе)\n  • PKO Bank: исключений нет — включать ВСЕ строки\n\n═══ description ═══\n\nПолный текст описания транзакции из выписки (как написано в документе). Используется для отладки и поисковых запросов.\n\n═══ ФОРМАТ ОТВЕТА ═══\n\nЕсли документ распознан как банковская выписка:\n→ Верни JSON-массив транзакций. Чистый JSON, БЕЗ markdown-обёртки ```json ... ```, БЕЗ пояснений до или после.\n\nЕсли документ НЕ является банковской выпиской (например, инвойс, чек, договор):\n→ Верни ровно: {\"error\": \"NOT_STATEMENT\"}\n\nЕсли документ выписка, но нечитаем / повреждён:\n→ Верни ровно: {\"error\": \"НЕЧИТАЕМ\"}\n\n═══ ПРИМЕР ВЫХОДА (Приорбанк BY, 2 транзакции) ═══\n[\n  {\"bank\":\"Priorbank\",\"country\":\"Беларусь\",\"period\":\"2025.04\",\"status\":\"Выбытие\",\"date_doc\":\"15.04.2025\",\"date_paid\":\"15.04.2025\",\"counterparty\":\"ООО Территория Баланса\",\"amount\":370.00,\"currency\":\"BYN\",\"invoice_number\":null,\"description\":\"591043364 ООО ТЕРРИТОРИЯ БАЛАНСА УСЛУГИ ВЕДЕНИЯ БУХГАЛТЕРСКОГО УЧЕТА ЗА МАРТ 2025\"},\n  {\"bank\":\"Priorbank\",\"country\":\"Беларусь\",\"period\":\"2025.04\",\"status\":\"Поступление\",\"date_doc\":\"22.04.2025\",\"date_paid\":\"22.04.2025\",\"counterparty\":\"ООО Горизонт\",\"amount\":3000.00,\"currency\":\"BYN\",\"invoice_number\":\"17\",\"description\":\"ОПЛАТА ПО СЧЕТУ 17 ОТ 20.04.2025\"}\n]\n\n═══ ПРИМЕР ВЫХОДА (PKO Bank PL, 1 транзакция) ═══\n[\n  {\"bank\":\"PKO_BP\",\"country\":\"Польша\",\"period\":\"2026.02\",\"status\":\"Поступление\",\"date_doc\":\"12.02.2026\",\"date_paid\":\"12.02.2026\",\"counterparty\":\"UNL Solutions Ltd\",\"amount\":655.48,\"currency\":\"USD\",\"invoice_number\":\"FV02012026\",\"description\":\"Przelew zagraniczny i walutowy. Nazwa nadawcy: UNL SOLUTIONS LTD. Tytuł: FV02012026\"}\n]\n\nИзвлеки транзакции из приложенного документа.",
+        "inputType": "binary",
+        "options": {}
+      },
+      "id": "accb87fd-6e22-4297-8620-53fc9fe09ae2",
+      "name": "Gemini Vision",
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1,
+      "position": [
+        -5008,
+        2960
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "googlePalmApi": {
+          "id": "rFj4CFpfE1gEGUO6",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// WF-06 [3] Parse Statement — v1.1\n// Изменения v1.1: добавлен invoice_number в нормализацию транзакций\n// ============================================================\n\nfunction extractGeminiText(item) {\n  if (!item) return '';\n  if (item.content && item.content.parts && item.content.parts[0] && item.content.parts[0].text) {\n    return item.content.parts[0].text;\n  }\n  if (typeof item.text === 'string' && item.text.length) return item.text;\n  if (typeof item.content === 'string' && item.content.length) return item.content;\n  if (Array.isArray(item.content) && item.content[0]) {\n    const c0 = item.content[0];\n    if (typeof c0 === 'string') return c0;\n    if (c0.text) return c0.text;\n  }\n  if (typeof item.response === 'string') return item.response;\n  if (item.message && typeof item.message.content === 'string') return item.message.content;\n  if (typeof item.output === 'string') return item.output;\n  if (typeof item.generatedText === 'string') return item.generatedText;\n  if (item.candidates && item.candidates[0] && item.candidates[0].content) {\n    const parts = item.candidates[0].content.parts;\n    if (parts && parts[0] && parts[0].text) return parts[0].text;\n  }\n  return '';\n}\n\nfunction normalizeCountry(raw) {\n  const s = String(raw || '').toLowerCase().trim();\n  if (s.includes('польш') || s.includes('polsk') || s === 'pl') return 'Польша';\n  return 'Беларусь';\n}\n\nfunction normalizeBank(raw) {\n  const s = String(raw || '').toLowerCase().trim();\n  if (s.includes('pko')) return 'PKO_BP';\n  return 'Priorbank';\n}\n\nfunction normalizeStatus(raw) {\n  return String(raw || '').includes('Поступление') ? 'Поступление' : 'Выбытие';\n}\n\nfunction normalizeAmount(raw) {\n  if (typeof raw === 'number') return Math.abs(raw);\n  const s = String(raw || '').replace(/\\s/g, '').replace(',', '.').replace(/[^0-9.\\-]/g, '');\n  const n = parseFloat(s);\n  return isNaN(n) ? 0 : Math.abs(n);\n}\n\nfunction normalizeCurrency(raw) {\n  const s = String(raw || '').toUpperCase().trim();\n  return ['BYN', 'USD', 'EUR', 'PLN'].includes(s) ? s : '';\n}\n\nfunction normalizeDate(raw) {\n  const s = String(raw || '').trim();\n  if (/^\\d{2}\\.\\d{2}\\.\\d{4}$/.test(s)) return s;\n  const m1 = s.match(/^(\\d{4})-(\\d{2})-(\\d{2})$/);\n  if (m1) return `${m1[3]}.${m1[2]}.${m1[1]}`;\n  const m2 = s.match(/^(\\d{4})\\/(\\d{2})\\/(\\d{2})$/);\n  if (m2) return `${m2[3]}.${m2[2]}.${m2[1]}`;\n  return '';\n}\n\nfunction periodFromDate(ddmmyyyy) {\n  const m = String(ddmmyyyy || '').match(/^(\\d{2})\\.(\\d{2})\\.(\\d{4})$/);\n  return m ? `${m[3]}.${m[2]}` : '';\n}\n\n// === v1.1: нормализация номера инвойса ===\nfunction normalizeInvoiceNumber(raw) {\n  if (raw === null || raw === undefined) return '';\n  const s = String(raw).trim();\n  if (!s || s === 'null') return '';\n  // Убираем лишние пробелы вокруг разделителей\n  return s.replace(/\\s*([/\\-#])\\s*/g, '$1').trim();\n}\n\n// === Берём данные ===\nconst geminiOut = $input.first().json;\nconst chatId = $('Input Validator').first().json.chatId;\nconst raw = extractGeminiText(geminiOut);\n\nif (!raw) {\n  return [{ json: {\n    chatId, isError: true, _route: 1,\n    errorText: '\\u26A0\\uFE0F Gemini не вернул ответ. Попробуйте /vpsk снова или используйте файл лучшего качества.'\n  }}];\n}\n\n// Снимаем markdown-обёртку (NFR-12)\nconst cleaned = raw.replace(/```json\\s*/gi, '').replace(/```\\s*/g, '').trim();\n\n// Сначала проверяем сигнал ошибки от AI (объект, не массив)\nif (cleaned.startsWith('{')) {\n  try {\n    const errObj = JSON.parse(cleaned);\n    if (errObj.error === 'NOT_STATEMENT') {\n      return [{ json: {\n        chatId, isError: true, _route: 1,\n        errorText: '\\u274C Файл не похож на банковскую выписку.\\n\\nОжидается: Приорбанк (.docx) или PKO Bank Polski (.pdf).\\n\\nОтправьте /vpsk заново и приложите выписку.'\n      }}];\n    }\n    if (errObj.error === 'НЕЧИТАЕМ') {\n      return [{ json: {\n        chatId, isError: true, _route: 1,\n        errorText: '\\u274C Выписка нечитаема. Отправьте файл лучшего качества или другой формат.'\n      }}];\n    }\n  } catch (e) { /* падаем дальше — попробуем как массив */ }\n}\n\n// Извлекаем массив\nlet parsed;\ntry {\n  const m = cleaned.match(/\\[[\\s\\S]*\\]/);\n  if (!m) throw new Error('No JSON array found');\n  parsed = JSON.parse(m[0]);\n  if (!Array.isArray(parsed)) throw new Error('Parsed value is not an array');\n} catch (e) {\n  return [{ json: {\n    chatId, isError: true, _route: 1,\n    errorText: '\\u274C Не удалось распарсить ответ Gemini как JSON-массив.',\n    _parseError: e.message,\n    _rawSample: cleaned.slice(0, 200)\n  }}];\n}\n\nif (parsed.length === 0) {\n  return [{ json: {\n    chatId, isError: true, _route: 1,\n    errorText: '\\u26A0\\uFE0F В выписке не найдено ни одной транзакции. Проверьте, что файл — действительно выписка с операциями.'\n  }}];\n}\n\n// === Нормализация каждой транзакции (v1.1 — добавлен invoice_number) ===\nconst normalized = parsed.map(tx => {\n  const dateDoc  = normalizeDate(tx.date_doc);\n  const datePaid = normalizeDate(tx.date_paid) || dateDoc;\n  return {\n    bank:           normalizeBank(tx.bank),\n    country:        normalizeCountry(tx.country),\n    period:         String(tx.period || '').trim() || periodFromDate(dateDoc),\n    status:         normalizeStatus(tx.status),\n    date_doc:       dateDoc,\n    date_paid:      datePaid,\n    counterparty:   (tx.counterparty === null || tx.counterparty === undefined) ? '' : String(tx.counterparty).trim(),\n    amount:         normalizeAmount(tx.amount),\n    currency:       normalizeCurrency(tx.currency),\n    invoice_number: normalizeInvoiceNumber(tx.invoice_number),  // ← v1.1\n    description:    String(tx.description || '').trim()\n  };\n}).filter(tx => tx.amount > 0 && tx.currency && tx.date_doc && tx.period);\n\nif (normalized.length === 0) {\n  return [{ json: {\n    chatId, isError: true, _route: 1,\n    errorText: '\\u26A0\\uFE0F После нормализации не осталось валидных транзакций (нет суммы / валюты / даты). Проверьте качество файла.'\n  }}];\n}\n\n// === Консенсус по банку / стране / периоду ===\nfunction mode(arr) {\n  const cnt = {};\n  arr.forEach(v => { if (v) cnt[v] = (cnt[v] || 0) + 1; });\n  let best = '', bestN = 0;\n  for (const k in cnt) if (cnt[k] > bestN) { best = k; bestN = cnt[k]; }\n  return best;\n}\n\nconst bank    = mode(normalized.map(t => t.bank))    || normalized[0].bank;\nconst country = mode(normalized.map(t => t.country)) || normalized[0].country;\nconst period  = mode(normalized.map(t => t.period))  || normalized[0].period;\n\nconst expectedCountry = bank === 'PKO_BP' ? 'Польша' : 'Беларусь';\nif (country !== expectedCountry) {\n  return [{ json: {\n    chatId, isError: true, _route: 1,\n    errorText: `\\u26A0\\uFE0F Несогласованные данные: банк ${bank}, страна ${country}. Проверьте файл.`\n  }}];\n}\n\n// === Сводка для подтверждения ===\nlet countIn = 0, countOut = 0, sumIn = 0, sumOut = 0;\nconst dates = [];\nfor (const t of normalized) {\n  if (t.status === 'Поступление') { countIn++; sumIn += t.amount; }\n  else                            { countOut++; sumOut += t.amount; }\n  if (t.date_doc) dates.push(t.date_doc);\n}\n\nfunction toIso(ddmmyyyy) {\n  const m = ddmmyyyy.match(/^(\\d{2})\\.(\\d{2})\\.(\\d{4})$/);\n  return m ? `${m[3]}-${m[2]}-${m[1]}` : '';\n}\nconst isoDates = dates.map(toIso).filter(Boolean).sort();\nconst periodFrom = isoDates[0]                 ? isoDates[0].split('-').reverse().join('.')                 : '';\nconst periodTo   = isoDates[isoDates.length-1] ? isoDates[isoDates.length-1].split('-').reverse().join('.') : '';\n\nconst currencies = Array.from(new Set(normalized.map(t => t.currency).filter(Boolean)));\nconst mainCurrency = currencies.length === 1 ? currencies[0] : '';\n\nreturn [{ json: {\n  chatId,\n  isError: false,\n  _route: 0,\n  bank,\n  country,\n  period,\n  countIn,\n  countOut,\n  sumIn,\n  sumOut,\n  mainCurrency,\n  currencies,\n  periodFrom,\n  periodTo,\n  total: normalized.length,\n  transactions: normalized\n}}];"
+      },
+      "id": "6a587d52-f919-4a9c-9f6b-d57fa1da7bab",
+      "name": "Parse Statement",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -4784,
+        2960
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 2,
+        "output": "={{ $json._route }}"
+      },
+      "id": "5827f661-836a-4f06-a04c-977826f73111",
+      "name": "Statement Switch",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        -4560,
+        2960
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Банк",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "74d6e801-874c-461a-b9b9-75daba734d16",
+      "name": "Read Bank Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -4336,
+        2880
+      ],
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "rnvzuybEF91V5uQQ",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// WF-06 [4] Build Dataset — v1.1\n// Изменения v1.1: добавлен 'Номер инвойса (банк)' в объект newRows\n// ============================================================\n\nconst meta = $('Parse Statement').first().json;\nconst { bank, country, period, transactions } = meta;\n\nconst existing = $input.all().map(i => i.json).filter(r => {\n  return r && r['bank_id'];\n});\n\n// 1) Старые строки этого триплета — исключаем (перезагрузка выписки, NFR-17)\nconst keptRows = existing.filter(r => !(\n  String(r['Страна']) === country &&\n  String(r['Период']) === period &&\n  String(r['Банк'])   === bank\n));\n\n// 2) Максимальный seq в (Country, Period) среди kept\nconst countryCode = country === 'Польша' ? 'PL' : 'BY';\nconst yearMonth = period.replace('.', '');\nconst seqPrefix = `${countryCode}_${yearMonth}_`;\n\nlet maxSeq = 0;\nfor (const r of keptRows) {\n  const id = String(r['bank_id'] || '');\n  if (id.startsWith(seqPrefix)) {\n    const n = parseInt(id.slice(seqPrefix.length), 10);\n    if (!isNaN(n) && n > maxSeq) maxSeq = n;\n  }\n}\n\n// 3) Назначаем bank_id новым строкам (v1.1 — добавлен 'Номер инвойса (банк)')\nconst newRows = transactions.map((tx, idx) => {\n  const seq = maxSeq + idx + 1;\n  const bankId = `${seqPrefix}${String(seq).padStart(4, '0')}`;\n  return {\n    'bank_id':                bankId,\n    'Банк':                   tx.bank,\n    'Период':                 tx.period,\n    'Страна':                 tx.country,\n    'Статус':                 tx.status,\n    'Дата документа':         tx.date_doc,\n    'Контрагент':             tx.counterparty || '',\n    'Дата оплаты':            tx.date_paid,\n    'Сумма':                  tx.amount,\n    'Валюта':                 tx.currency,\n    'Описание':               tx.description,\n    'Номер инвойса (банк)':   tx.invoice_number || '',   // ← v1.1\n    'Статус сверки':          'PENDING',\n    'UUID реестра':           ''\n  };\n});\n\n// 4) Финальный сет: kept + new\nreturn [{\n  json: {\n    chatId:          meta.chatId,\n    bank,\n    country,\n    period,\n    countIn:         meta.countIn,\n    countOut:        meta.countOut,\n    sumIn:           meta.sumIn,\n    sumOut:          meta.sumOut,\n    mainCurrency:    meta.mainCurrency,\n    currencies:      meta.currencies,\n    periodFrom:      meta.periodFrom,\n    periodTo:        meta.periodTo,\n    total:           meta.total,\n    transactions:    meta.transactions,\n    droppedOldCount: existing.length - keptRows.length,\n    finalRowset:     keptRows.concat(newRows),\n    keptCount:       keptRows.length,\n    newCount:        newRows.length\n  }\n}];"
+      },
+      "id": "b1bd6531-f2e0-4094-868f-9314f5a5093a",
+      "name": "Build Dataset",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -4112,
+        2880
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "clear",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Банк",
+          "mode": "name"
+        },
+        "clear": "specificRows",
+        "startIndex": 2,
+        "rowsToDelete": 10000
+      },
+      "id": "f7025bfa-c9be-4dee-b223-c0e89a88efaa",
+      "name": "Clear Bank Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -3888,
+        2880
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "rnvzuybEF91V5uQQ",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// === WF-06 [5a] Explode rows — превращаем массив finalRowset в N items ===\n\nconst meta = $('Build Dataset').first().json;\nconst rowset = meta.finalRowset || [];\n\nif (rowset.length === 0) {\n  return [{ json: {\n    _empty: true,\n    chatId: meta.chatId,\n    _meta: meta\n  }}];\n}\n\nreturn rowset.map(row => ({\n  json: {\n    ...row,\n    chatId: meta.chatId,\n    _empty: false\n  }\n}));"
+      },
+      "id": "c6fa88eb-3128-48ee-8d0d-591790a554c0",
+      "name": "Explode Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -3664,
+        2880
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Банк",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "bank_id": "={{ $json['bank_id'] }}",
+            "Банк": "={{ $json['Банк'] }}",
+            "Период": "={{ $json['Период'] }}",
+            "Страна": "={{ $json['Страна'] }}",
+            "Статус": "={{ $json['Статус'] }}",
+            "Дата документа": "={{ $json['Дата документа'] }}",
+            "Контрагент": "={{ $json['Контрагент'] }}",
+            "Дата оплаты": "={{ $json['Дата оплаты'] }}",
+            "Сумма": "={{ $json['Сумма'] }}",
+            "Валюта": "={{ $json['Валюта'] }}",
+            "Описание": "={{ $json['Описание'] }}",
+            "Номер инвойса (банк)": "={{ $json['Номер инвойса (банк)'] }}",
+            "Статус сверки": "={{ $json['Статус сверки'] }}",
+            "UUID реестра": "={{ $json['UUID реестра'] }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "bank_id",
+              "displayName": "bank_id",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Банк",
+              "displayName": "Банк",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Период",
+              "displayName": "Период",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Страна",
+              "displayName": "Страна",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Статус",
+              "displayName": "Статус",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Дата документа",
+              "displayName": "Дата документа",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Контрагент",
+              "displayName": "Контрагент",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Дата оплаты",
+              "displayName": "Дата оплаты",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Сумма",
+              "displayName": "Сумма",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Валюта",
+              "displayName": "Валюта",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Описание",
+              "displayName": "Описание",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Номер инвойса (банк)",
+              "displayName": "Номер инвойса (банк)",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Статус сверки",
+              "displayName": "Статус сверки",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "UUID реестра",
+              "displayName": "UUID реестра",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "1e864ca1-1014-4010-9300-537e75c60010",
+      "name": "Append All Rows",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -3440,
+        2880
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "rnvzuybEF91V5uQQ",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// WF-06 [6] Build Confirmation — v1.1\n// Изменения v1.1: добавлена строка 🧾 с количеством транзакций с инвойсами\n// ============================================================\n\nconst d = $('Build Dataset').first().json;\n\nconst flag = d.country === 'Польша'\n  ? '\\uD83C\\uDDF5\\uD83C\\uDDF1'  // 🇵🇱\n  : '\\uD83C\\uDDE7\\uD83C\\uDDFE'; // 🇧🇾\n\nconst bankLabel = d.bank === 'PKO_BP' ? 'PKO Bank Polski' : 'Priorbank';\n\nfunction fmt(n) {\n  const v = Number(n) || 0;\n  return Number.isInteger(v) ? String(v) : v.toFixed(2);\n}\n\nconst inLine  = `   Поступлений: ${d.countIn} (+${fmt(d.sumIn)} ${d.mainCurrency || ''})`;\nconst outLine = `   Выбытий: ${d.countOut} (-${fmt(d.sumOut)} ${d.mainCurrency || ''})`;\n\nconst currencyNote = (!d.mainCurrency && d.currencies && d.currencies.length > 1)\n  ? `\\n   \\u26A0\\uFE0F В выписке несколько валют: ${d.currencies.join(', ')}`\n  : '';\n\nconst replaceNote = d.droppedOldCount > 0\n  ? `\\n\\u267B\\uFE0F Заменено ${d.droppedOldCount} строк предыдущей загрузки за этот период.`\n  : '';\n\n// === v1.1: счётчик транзакций с номером инвойса ===\nconst withInvoice = (d.transactions || []).filter(t => t.invoice_number && t.invoice_number !== '').length;\nconst invoiceLine = `\\n\\uD83E\\uDDFE С номером инвойса: ${withInvoice} из ${d.total}`;\n\nconst confirmationText =\n`\\u2705 Выписка загружена\n\n${flag} ${d.country} | ${bankLabel}\n\\uD83D\\uDCC5 Период: ${d.periodFrom || '\\u2014'} \\u2014 ${d.periodTo || '\\u2014'}\n\\uD83D\\uDCCA Транзакций: ${d.total}\n${inLine}\n${outLine}${currencyNote}${invoiceLine}${replaceNote}\n\nЗапустите /reconcile для сверки с реестром.`;\n\nreturn [{ json: {\n  chatId: d.chatId,\n  confirmationText,\n  isError: false,\n  bank: d.bank,\n  country: d.country,\n  period: d.period,\n  total: d.total\n}}];"
+      },
+      "id": "1b531817-28a1-4237-b15e-351bfb218892",
+      "name": "Build Confirmation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -3216,
+        2880
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// === WF-06 [E] Build Error — единая точка для путей ошибок ===\nconst d = $input.first().json;\nreturn [{ json: {\n  chatId: d.chatId || '',\n  confirmationText: d.errorText || '\\u274C Произошла неизвестная ошибка при обработке выписки.',\n  isError: true\n}}];"
+      },
+      "id": "9c61aef8-60e9-445a-a64c-7769e95d6eec",
+      "name": "Build Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -4112,
+        3120
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.confirmationText }}",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "995e27b3-1759-45c2-a800-38f0e31ddf96",
+      "name": "Send Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -2992,
+        3040
+      ],
+      "webhookId": "wf06-send",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "telegramApi": {
+          "id": "j5C9rNWpZCK0yhWr",
+          "name": "MINE TG"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({\n  ok: !$json.isError,\n  chatId: $json.chatId,\n  message: $json.confirmationText\n}) }}",
+        "options": {}
+      },
+      "id": "66758aec-1cf0-4ea7-81f9-b0947b4f9253",
+      "name": "Respond to WF-01",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -2768,
+        3040
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Start": {
+      "main": [
+        [
+          {
+            "node": "Input Validator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Input Validator": {
+      "main": [
+        [
+          {
+            "node": "Validation Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validation Switch": {
+      "main": [
+        [
+          {
+            "node": "TG Get File",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TG Get File": {
+      "main": [
+        [
+          {
+            "node": "Download File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download File": {
+      "main": [
+        [
+          {
+            "node": "Fix MIME",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fix MIME": {
+      "main": [
+        [
+          {
+            "node": "Gemini Vision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Vision": {
+      "main": [
+        [
+          {
+            "node": "Parse Statement",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Statement": {
+      "main": [
+        [
+          {
+            "node": "Statement Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Statement Switch": {
+      "main": [
+        [
+          {
+            "node": "Read Bank Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Bank Sheet": {
+      "main": [
+        [
+          {
+            "node": "Build Dataset",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Dataset": {
+      "main": [
+        [
+          {
+            "node": "Clear Bank Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clear Bank Sheet": {
+      "main": [
+        [
+          {
+            "node": "Explode Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Explode Rows": {
+      "main": [
+        [
+          {
+            "node": "Append All Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append All Rows": {
+      "main": [
+        [
+          {
+            "node": "Build Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Confirmation": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Error": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Telegram": {
+      "main": [
+        [
+          {
+            "node": "Respond to WF-01",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "9be08984-388e-44bb-b062-88ace9618e1f",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "cca9a5f9532f6dbec2cbee648be68fdaa6fd41fb5d6f078ff1e440e4d1b9b1c5"
+  },
+  "id": "28VVL7syPQKeLMJe",
+  "tags": []
+}

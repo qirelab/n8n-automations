@@ -1,0 +1,1028 @@
+{
+  "name": "WF-07 Reconciliation Engine",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## WF-07: Reconciliation Engine (Слой 2)\n\n**Назначение.** Сверяет лист «Банк» с листом «Реестр» по упрощённому алгоритму PATCH v1.1:\n   Шаг 0 — Страна+Статус+Сумма±0.02+Валюта (предфильтр)\n   Шаг 1 — Номер инвойса (приоритет)\n   Шаг 2 — Контрагент (fallback при пустом инвойсе)\n\n**Триггеры:**\n- Webhook POST /webhook/wf07-reconcile  ← /reconcile, /missing, /report\n- Schedule: 1-е число месяца, 09:00 Europe/Minsk → mode=reconcile, period=предыдущий месяц\n\n**Контракт входа от WF-01:**\n```\n{ chatId: string, period?: 'YYYY-MM', mode: 'reconcile'|'missing'|'report' }\n```\n\n**Что делает (mode=reconcile):**\n1. Читает лист «Банк» → фильтр по периоду + Статус сверки in {PENDING, UNMATCHED}\n2. Читает лист «Реестр» → фильтр по периоду + Статус оплаты = «Оплачено»\n3. Прогоняет матчинг (Шаг 0 → Шаг 1 → Шаг 2)\n4. Update листа «Банк»: Статус сверки + UUID реестра (по bank_id)\n5. Clear + Append листа «Сверка» (12 колонок, BY+PL вместе)\n6. Уведомление в Telegram по шаблону §2.7 PRD\n\n**Mode=missing:**\nЧитает лист «Сверка», берёт UNMATCHED, форматирует список и шлёт в Telegram.\n\n**Mode=report:**\nВозвращает ссылку на Google Sheets.\n\n**Env-переменные:**\n- GOOGLE_SHEETS_ID\n- TELEGRAM_BOT_TOKEN\n- TELEGRAM_ADMIN_CHAT_ID (fallback для cron)\n\n**Структура листа «Банк» (после PATCH):**\nA=bank_id | B=Банк | C=Период | D=Страна | E=Статус | F=Дата документа | G=Контрагент | H=Дата оплаты | I=Сумма | J=Валюта | K=Описание | L=Номер инвойса (банк) | M=Статус сверки | N=UUID реестра\n\n**Структура листа «Реестр» (после PATCH):**\nA=Nr ID | B=Статус | C=Дата документа | D=Контрагент | E=Дата оплаты | F=Сумма | G=Валюта | H=Статус оплаты | I=Страна | J=Ссылка | K=Описание AI | L=UUID | M=Номер инвойса\n\n**Структура листа «Сверка» (12 колонок):**\nbank_id | Страна | Банк | Дата операции | Сумма | Валюта | Статус | Контрагент (банк) | Статус сверки | Nr ID (реестр) | Контрагент (реестр) | UUID реестра",
+        "height": 920,
+        "width": 620,
+        "color": 4
+      },
+      "id": "f2e2171e-c10d-4dbc-8f6f-e1c3ca95eec1",
+      "name": "Note Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "content": "### Перед первым запуском\n\n1. В Google Sheets создать лист **«Сверка»** с заголовками в строке 1:\n   `bank_id | Страна | Банк | Дата операции | Сумма | Валюта | Статус | Контрагент (банк) | Статус сверки | Nr ID (реестр) | Контрагент (реестр) | UUID реестра`\n2. Применить PATCH v1.1: добавить колонку M «Номер инвойса» в листе «Реестр» и колонку L «Номер инвойса (банк)» в листе «Банк» (со сдвигом существующих L→M, M→N).\n3. Активировать воркфлоу и проверить webhook URL: `wf07-reconcile`.",
+        "height": 320,
+        "width": 460,
+        "color": 3
+      },
+      "id": "ac9f9b25-7fe2-4911-81e6-4d7a3fbd9202",
+      "name": "Note Setup",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        640,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "content": "### Атомарность (MVP)\n\nПоследовательность: **Update Bank → Clear Recon → Append Recon → Send Telegram**.\n\nЕсли Append упадёт после Clear — лист «Сверка» останется пустым. Пользователь увидит это в Telegram (или его отсутствие) и сможет повторить /reconcile.\n\nUpdate Bank идёт по bank_id (matchingColumns) и затрагивает только колонки M (Статус сверки) и N (UUID реестра).",
+        "height": 280,
+        "width": 460,
+        "color": 5
+      },
+      "id": "abae2027-83d3-4ed1-b4cb-0bf8c8ffb75d",
+      "name": "Note Atomicity",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1120,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "wf07-reconcile",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "4884f9d5-b221-42df-81b0-dadf124d0c88",
+      "name": "Start Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        640,
+        480
+      ],
+      "webhookId": "wf07-reconcile"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 6 1 * *"
+            }
+          ]
+        }
+      },
+      "id": "171b3535-13c9-4abb-be2b-b83c80ee060f",
+      "name": "Schedule (1st 09:00 Minsk)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        640,
+        704
+      ],
+      "notesInFlow": true,
+      "notes": "1-е число каждого месяца, 09:00 Europe/Minsk = 06:00 UTC. n8n cron-выражение в UTC."
+    },
+    {
+      "parameters": {
+        "jsCode": "// === WF-07 [1] Resolve Period & Mode ===\n// Нормализует входные данные из двух источников (Webhook / Schedule)\n// в единый формат: { chatId, period, mode, isFromCron }.\n\nconst raw  = $input.first().json || {};\nconst body = raw.body || raw;\n\n// Признак запуска по расписанию: у Schedule Trigger в payload есть\n// поля timestamp / Readable date / hour и нет body.chatId.\nconst isFromCron = !body || (!body.chatId && !body.mode);\n\n// chatId из webhook (manual /reconcile, /missing, /report)\nlet chatId = '';\nif (!isFromCron) {\n  chatId = String(body.chatId || body.chat_id || '').trim();\n}\n\n// mode: для cron всегда reconcile; для webhook — то, что прислал WF-01\nlet mode = isFromCron ? 'reconcile' : String(body.mode || 'reconcile').toLowerCase();\nif (!['reconcile', 'missing', 'report'].includes(mode)) mode = 'reconcile';\n\n// Period:\n//   webhook /reconcile с YYYY-MM → этот период\n//   webhook /reconcile без аргумента → текущий месяц\n//   webhook /missing, /report → текущий месяц (для отчёта)\n//   cron → предыдущий месяц\nconst now = new Date();\nlet year, month;\n\nif (isFromCron) {\n  // Предыдущий месяц\n  const d = new Date(now.getFullYear(), now.getMonth() - 1, 1);\n  year  = d.getFullYear();\n  month = d.getMonth() + 1;\n} else {\n  const rawPeriod = String(body.period || '').trim();\n  const m = rawPeriod.match(/^(\\d{4})-(\\d{2})$/);\n  if (m) {\n    year  = parseInt(m[1], 10);\n    month = parseInt(m[2], 10);\n  } else {\n    year  = now.getFullYear();\n    month = now.getMonth() + 1;\n  }\n}\n\nconst period   = `${year}.${String(month).padStart(2, '0')}`;        // 2026.02\nconst periodIso = `${year}-${String(month).padStart(2, '0')}`;        // 2026-02\nconst monthNames = ['', 'январь','февраль','март','апрель','май','июнь','июль','август','сентябрь','октябрь','ноябрь','декабрь'];\nconst monthRu = monthNames[month];\n\n// Границы периода для шаблонов (DD.MM.YYYY)\nconst pad = n => String(n).padStart(2, '0');\nconst lastDay = new Date(year, month, 0).getDate();\nconst periodFromDdmmyyyy = `01.${pad(month)}.${year}`;\nconst periodToDdmmyyyy   = `${pad(lastDay)}.${pad(month)}.${year}`;\n\n// Маршрут для Switch: 0=reconcile, 1=missing, 2=report\nconst routeIndex = mode === 'reconcile' ? 0 : (mode === 'missing' ? 1 : 2);\n\nreturn [{ json: {\n  chatId,\n  isFromCron,\n  mode,\n  period,\n  periodIso,\n  periodLabel: `${monthRu} ${year}`,\n  periodFromDdmmyyyy,\n  periodToDdmmyyyy,\n  routeIndex\n}}];"
+      },
+      "id": "f503a93d-231b-431a-9930-11c7dd5a538f",
+      "name": "Resolve Period & Mode",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        864,
+        592
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 3,
+        "output": "={{ $json.routeIndex }}"
+      },
+      "id": "fedafbd4-326a-405c-9db5-6b32014de501",
+      "name": "Mode Switch",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        1088,
+        592
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Банк",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "8a82bb0f-27dd-4665-bbd5-c7c204179593",
+      "name": "Read Bank Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1376,
+        448
+      ],
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "rnvzuybEF91V5uQQ",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Реестр",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "65179961-8539-44c8-aab5-1a4587dc89c3",
+      "name": "Read Registry Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1600,
+        448
+      ],
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "rnvzuybEF91V5uQQ",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// WF-07 [4] Match Engine — упрощённый алгоритм PATCH v1.1.\n//\n// Шаги для каждой банковской транзакции:\n//   Шаг 0 (ОБЯЗАТЕЛЬНЫЙ предфильтр):\n//          Страна банк == Страна реестр\n//          Статус банк == Статус реестр\n//          abs(реестр.Сумма) ≈ банк.Сумма  (допуск ±0.3)\n//          Валюта банк == Валюта реестр  (без учёта регистра)\n//   Шаг 1 (приоритетный):\n//          normalize(банк.Номер инвойса) == normalize(реестр.Номер инвойса)\n//          (только если оба поля не пусты)\n//   Шаг 2 (fallback):\n//          normalize(банк.Контрагент) == normalize(реестр.Контрагент)\n//\n// Несколько кандидатов — берём первого, добавляем [ambiguous] в описание.\n// ============================================================\n\nconst meta = $('Resolve Period & Mode').first().json;\nconst { chatId, period, periodLabel, periodFromDdmmyyyy, periodToDdmmyyyy, isFromCron } = meta;\n\nconst AMOUNT_TOLERANCE = 30;\n\n// ---------- Утилиты ----------\nfunction normalizeInvoice(s) {\n  if (s === null || s === undefined) return '';\n  const v = String(s).trim();\n  if (!v) return '';\n  return v.toLowerCase().replace(/\\s+/g, '');\n}\n\nfunction normalizeCounterparty(s) {\n  if (s === null || s === undefined) return '';\n  const forms = [\n    'ооо','зао','оао','одо','чуп','уп','ип',\n    'sp z o o','spzoo','sa','s a','spj','sp j','spk','sp k',\n    'ltd','llc','gmbh','inc','sarl','sas'\n  ];\n  let n = String(s).toLowerCase()\n    .replace(/[\\u00AB\\u00BB\"'`]/g, ' ')\n    .replace(/[^a-zа-яёA-ZА-ЯЁ0-9\\s]/gi, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim();\n  forms.forEach(f => {\n    n = n.replace(new RegExp('\\\\b' + f + '\\\\b', 'g'), '');\n  });\n  return n.replace(/\\s+/g, ' ').trim();\n}\n\n// Парсер DD.MM.YYYY → YYYY.MM (для извлечения периода из реестра)\nfunction periodFromRegistryRow(r) {\n  // Приоритет: Дата оплаты (это и есть момент проводки), fallback Дата документа\n  const tryDate = (s) => {\n    const m = String(s || '').trim().match(/^(\\d{2})\\.(\\d{2})\\.(\\d{4})$/);\n    return m ? `${m[3]}.${m[2]}` : '';\n  };\n  return tryDate(r['Дата оплаты']) || tryDate(r['Дата документа']);\n}\n\nfunction toNumber(v) {\n  if (typeof v === 'number') return v;\n  const s = String(v || '').replace(/\\s/g, '').replace(',', '.').replace(/[^0-9.\\-]/g, '');\n  const n = parseFloat(s);\n  return isNaN(n) ? 0 : n;\n}\n\n// ---------- Чтение исходников ----------\nconst rawBankAll = $('Read Bank Sheet').all().map(i => i.json).filter(r => r && r['bank_id']);\nconst rawRegAll  = $('Read Registry Sheet').all().map(i => i.json).filter(r => r && r['Nr ID']);\n\n// Фильтр банка: период + статус сверки in {PENDING, UNMATCHED}\nconst bankRows = rawBankAll.filter(r => {\n  if (String(r['Период']).trim() !== period) return false;\n  const status = String(r['Статус сверки'] || '').trim().toUpperCase();\n  return status === 'PENDING' || status === 'UNMATCHED' || status === '';\n});\n\n// Фильтр реестра: период (по дате оплаты/документа) + Статус оплаты = Оплачено\nconst regRows = rawRegAll.filter(r => {\n  const payStatus = String(r['Статус оплаты'] || '').trim();\n  if (payStatus !== 'Оплачено') return false;\n  const rowPeriod = periodFromRegistryRow(r);\n  return rowPeriod === period;\n});\n\n// Если по этому периоду нечего сверять — выходим с пустым результатом\nif (bankRows.length === 0) {\n  return [{ json: {\n    chatId,\n    isFromCron,\n    period,\n    periodLabel,\n    periodFromDdmmyyyy,\n    periodToDdmmyyyy,\n    noWorkToDo: true,\n    bankCount: 0,\n    regCount: regRows.length,\n    bankUpdates: [],\n    reconciliationRows: [],\n    statsBy: { total: 0, matched: 0, unmatched: 0, bank: '' },\n    statsPl: { total: 0, matched: 0, unmatched: 0, bank: '' },\n    unmatchedBy: [],\n    unmatchedPl: []\n  }}];\n}\n\n// ---------- Алгоритм матчинга ----------\nconst results = [];\n\nfor (const tx of bankRows) {\n  const bankAmount   = toNumber(tx['Сумма']);\n  const bankCurrency = String(tx['Валюта'] || '').toUpperCase();\n\n  // Шаг 0: предфильтр\n  const candidates = regRows.filter(r => {\n    if (String(r['Страна']).trim() !== String(tx['Страна']).trim()) return false;\n    if (String(r['Статус']).trim() !== String(tx['Статус']).trim()) return false;\n    if (String(r['Валюта'] || '').toUpperCase().trim() !== bankCurrency) return false;\n    const regAmount = Math.abs(toNumber(r['Сумма']));\n    return Math.abs(regAmount - bankAmount) <= AMOUNT_TOLERANCE;\n  });\n\n  let matched = null;\n  let ambiguous = false;\n  let matchedBy = '';\n\n  if (candidates.length > 0) {\n    // Шаг 1: по номеру инвойса\n    const bInv = normalizeInvoice(tx['Номер инвойса (банк)']);\n    if (bInv) {\n      const hits = candidates.filter(r => normalizeInvoice(r['Номер инвойса']) === bInv);\n      if (hits.length > 0) {\n        matched   = hits[0];\n        ambiguous = hits.length > 1;\n        matchedBy = 'invoice';\n      }\n    }\n\n    // Шаг 2: по контрагенту\n    if (!matched) {\n      const bCp = normalizeCounterparty(tx['Контрагент']);\n      if (bCp) {\n        const hits = candidates.filter(r => normalizeCounterparty(r['Контрагент']) === bCp);\n        if (hits.length > 0) {\n          matched   = hits[0];\n          ambiguous = hits.length > 1;\n          matchedBy = 'counterparty';\n        }\n      }\n    }\n  }\n\n  results.push({ tx, matched, ambiguous, matchedBy });\n}\n\n// ---------- Сборка апдейтов листа «Банк» ----------\nconst bankUpdates = results.map(({ tx, matched, ambiguous }) => {\n  const newStatus = matched ? 'MATCHED' : 'UNMATCHED';\n  const newUuid   = matched ? String(matched['UUID'] || '') : '';\n  // Описание дополняем меткой [ambiguous] однократно\n  let description = String(tx['Описание'] || '');\n  if (ambiguous && !description.includes('[ambiguous]')) {\n    description = (description ? description + ' ' : '') + '[ambiguous]';\n  }\n  return {\n    'bank_id':        tx['bank_id'],\n    'Статус сверки':  newStatus,\n    'UUID реестра':   newUuid,\n    'Описание':       description\n  };\n});\n\n// ---------- Сборка строк листа «Сверка» (12 колонок) ----------\nconst reconciliationRows = results.map(({ tx, matched }) => ({\n  'bank_id':              tx['bank_id'] || '',\n  'Страна':               tx['Страна']  || '',\n  'Банк':                 tx['Банк']    || '',\n  'Дата операции':        tx['Дата документа'] || '',\n  'Сумма':                toNumber(tx['Сумма']),\n  'Валюта':               String(tx['Валюта'] || '').toUpperCase(),\n  'Статус':               tx['Статус'] || '',\n  'Контрагент (банк)':    tx['Контрагент'] || '',\n  'Статус сверки':        matched ? 'MATCHED' : 'UNMATCHED',\n  'Nr ID (реестр)':       matched ? String(matched['Nr ID'] || '') : '',\n  'Контрагент (реестр)':  matched ? String(matched['Контрагент'] || '') : '',\n  'UUID реестра':         matched ? String(matched['UUID'] || '') : ''\n}));\n\n// ---------- Статистика по странам ----------\nfunction stats(rows, country) {\n  const subset = rows.filter(r => r['Страна'] === country);\n  const matchedCnt = subset.filter(r => r['Статус сверки'] === 'MATCHED').length;\n  const unmatched  = subset.filter(r => r['Статус сверки'] === 'UNMATCHED');\n  // Банк-метка: уникальный банк, если он один (чаще всего так)\n  const banks = Array.from(new Set(subset.map(r => r['Банк']).filter(Boolean)));\n  const bankLabel = banks.length === 1\n    ? (banks[0] === 'PKO_BP' ? 'PKO Bank Polski' : 'Priorbank')\n    : banks.join(', ');\n  return {\n    total: subset.length,\n    matched: matchedCnt,\n    unmatched: unmatched.length,\n    bank: bankLabel,\n    unmatchedRows: unmatched\n  };\n}\n\nconst byStats = stats(reconciliationRows, 'Беларусь');\nconst plStats = stats(reconciliationRows, 'Польша');\n\nreturn [{ json: {\n  chatId,\n  isFromCron,\n  period,\n  periodLabel,\n  periodFromDdmmyyyy,\n  periodToDdmmyyyy,\n  noWorkToDo: false,\n  bankCount: bankRows.length,\n  regCount:  regRows.length,\n  bankUpdates,\n  reconciliationRows,\n  statsBy: {\n    total:     byStats.total,\n    matched:   byStats.matched,\n    unmatched: byStats.unmatched,\n    bank:      byStats.bank\n  },\n  statsPl: {\n    total:     plStats.total,\n    matched:   plStats.matched,\n    unmatched: plStats.unmatched,\n    bank:      plStats.bank\n  },\n  unmatchedBy: byStats.unmatchedRows,\n  unmatchedPl: plStats.unmatchedRows\n}}];"
+      },
+      "id": "76020f93-4c5e-4392-b685-704026bfca2f",
+      "name": "Match Engine",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1824,
+        448
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 2,
+        "output": "={{ $json.noWorkToDo ? 1 : 0 }}"
+      },
+      "id": "c745d221-1e42-47c9-8c74-73d1316561d0",
+      "name": "Has Data?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        2048,
+        448
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// === WF-07 [5a] Explode Bank Updates ===\n// Берём bankUpdates из Match Engine и эмитим N items для Update Bank Sheet.\n// Если массив пуст — создаём один служебный item, чтобы цепочка не оборвалась.\n\nconst meta = $('Match Engine').first().json;\nconst updates = meta.bankUpdates || [];\n\nif (updates.length === 0) {\n  return [{ json: { _empty: true, bank_id: '', 'Статус сверки': '', 'UUID реестра': '', 'Описание': '' } }];\n}\n\nreturn updates.map(u => ({ json: u }));"
+      },
+      "id": "8e3ac2ac-e897-4204-b2de-d77216336ad2",
+      "name": "Explode Bank Updates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2272,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Банк",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "bank_id": "={{ $json['bank_id'] }}",
+            "Статус сверки": "={{ $json['Статус сверки'] }}",
+            "UUID реестра": "={{ $json['UUID реестра'] }}",
+            "Описание": "={{ $json['Описание'] }}"
+          },
+          "matchingColumns": [
+            "bank_id"
+          ],
+          "schema": [
+            {
+              "id": "bank_id",
+              "displayName": "bank_id",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Статус сверки",
+              "displayName": "Статус сверки",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "UUID реестра",
+              "displayName": "UUID реестра",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Описание",
+              "displayName": "Описание",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a2632160-2f2f-4ba9-955a-ca393405aeb6",
+      "name": "Update Bank Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2496,
+        368
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "rnvzuybEF91V5uQQ",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "clear",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Сверка",
+          "mode": "name"
+        },
+        "clear": "specificRows",
+        "startIndex": 2,
+        "rowsToDelete": 10000
+      },
+      "id": "3bdc133a-0b23-4e54-afc9-06938b69c4aa",
+      "name": "Clear Reconciliation Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2720,
+        368
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "executeOnce": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "rnvzuybEF91V5uQQ",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// === WF-07 [6a] Explode Reconciliation Rows ===\n// Берём reconciliationRows из Match Engine и эмитим N items для Append.\n\nconst meta = $('Match Engine').first().json;\nconst rows = meta.reconciliationRows || [];\n\nif (rows.length === 0) {\n  // Лист уже очищен; ничего не добавляем.\n  return [{ json: {\n    _empty: true,\n    'bank_id': '', 'Страна': '', 'Банк': '', 'Дата операции': '',\n    'Сумма': 0, 'Валюта': '', 'Статус': '', 'Контрагент (банк)': '',\n    'Статус сверки': '', 'Nr ID (реестр)': '', 'Контрагент (реестр)': '', 'UUID реестра': ''\n  }}];\n}\n\nreturn rows.map(r => ({ json: r }));"
+      },
+      "id": "4dd62983-147d-4f83-9842-b9ca62485dd0",
+      "name": "Explode Recon Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2944,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Сверка",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "bank_id": "={{ $json['bank_id'] }}",
+            "Страна": "={{ $json['Страна'] }}",
+            "Банк": "={{ $json['Банк'] }}",
+            "Дата операции": "={{ $json['Дата операции'] }}",
+            "Сумма": "={{ $json['Сумма'] }}",
+            "Валюта": "={{ $json['Валюта'] }}",
+            "Статус": "={{ $json['Статус'] }}",
+            "Контрагент (банк)": "={{ $json['Контрагент (банк)'] }}",
+            "Статус сверки": "={{ $json['Статус сверки'] }}",
+            "Nr ID (реестр)": "={{ $json['Nr ID (реестр)'] }}",
+            "Контрагент (реестр)": "={{ $json['Контрагент (реестр)'] }}",
+            "UUID реестра": "={{ $json['UUID реестра'] }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "bank_id",
+              "displayName": "bank_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Страна",
+              "displayName": "Страна",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Банк",
+              "displayName": "Банк",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Дата операции",
+              "displayName": "Дата операции",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Сумма",
+              "displayName": "Сумма",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Валюта",
+              "displayName": "Валюта",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Статус",
+              "displayName": "Статус",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Контрагент (банк)",
+              "displayName": "Контрагент (банк)",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Статус сверки",
+              "displayName": "Статус сверки",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Nr ID (реестр)",
+              "displayName": "Nr ID (реестр)",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Контрагент (реестр)",
+              "displayName": "Контрагент (реестр)",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "UUID реестра",
+              "displayName": "UUID реестра",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "20f01673-a880-4753-a1f9-cde12cd79bad",
+      "name": "Append Reconciliation",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        3168,
+        368
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "rnvzuybEF91V5uQQ",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// === WF-07 [7] Build Reconcile Notification ===\n// Формирует текст уведомления по шаблону §2.7 PRD.\n// Закрытый месяц / открытый месяц — два разных шаблона.\n\nconst m = $('Match Engine').first().json;\nconst spreadsheetUrl = `https://docs.google.com/spreadsheets/d/${$env.GOOGLE_SHEETS_ID}/edit`;\n\nconst flagBy = '\\uD83C\\uDDE7\\uD83C\\uDDFE'; // 🇧🇾\nconst flagPl = '\\uD83C\\uDDF5\\uD83C\\uDDF1'; // 🇵🇱\n\nfunction fmtAmount(n) {\n  const v = Number(n) || 0;\n  return Number.isInteger(v) ? String(v) : v.toFixed(2);\n}\n\nfunction shortDate(ddmmyyyy) {\n  // 14.02.2026 → 14.02\n  const m = String(ddmmyyyy || '').match(/^(\\d{2})\\.(\\d{2})\\.\\d{4}$/);\n  return m ? `${m[1]}.${m[2]}` : (ddmmyyyy || '—');\n}\n\nconst by = m.statsBy;\nconst pl = m.statsPl;\nconst byBank = by.bank || 'Priorbank';\nconst plBank = pl.bank || 'PKO Bank Polski';\n\n// Закрытый месяц по странам?\nconst byClosed = by.total > 0 && by.unmatched === 0;\nconst plClosed = pl.total > 0 && pl.unmatched === 0;\nconst byEmpty  = by.total === 0;\nconst plEmpty  = pl.total === 0;\nconst allClosedOrEmpty = (byClosed || byEmpty) && (plClosed || plEmpty);\n\n// === Шаблон закрытого месяца ===\nfunction buildClosedTemplate() {\n  const lines = [\n    `\\u2705 Сверка за ${m.periodLabel} завершена`,\n    `Период: ${m.periodFromDdmmyyyy} \\u2014 ${m.periodToDdmmyyyy}`,\n    ''\n  ];\n  if (by.total > 0) {\n    lines.push(`${flagBy} Беларусь (${byBank}) \\u2014 все ${by.total} транзакций закрыты`);\n  } else {\n    lines.push(`${flagBy} Беларусь \\u2014 нет банковских транзакций за период`);\n  }\n  if (pl.total > 0) {\n    lines.push(`${flagPl} Польша (${plBank}) \\u2014 все ${pl.total} транзакций закрыты`);\n  } else {\n    lines.push(`${flagPl} Польша \\u2014 нет банковских транзакций за период`);\n  }\n  lines.push('');\n  lines.push('Месяц закрыт без замечаний.');\n  lines.push('');\n  lines.push(`\\uD83D\\uDCCA Реестр: ${spreadsheetUrl}`);\n  return lines.join('\\n');\n}\n\n// === Шаблон с незакрытыми позициями ===\nfunction buildOpenTemplate() {\n  const lines = [\n    `\\uD83D\\uDCCB Сверка за ${m.periodLabel} завершена`,\n    `Период: ${m.periodFromDdmmyyyy} \\u2014 ${m.periodToDdmmyyyy}`,\n    ''\n  ];\n\n  // Секция BY\n  if (by.total > 0) {\n    lines.push(`${flagBy} Беларусь (${byBank})`);\n    lines.push(`\\u2705 Закрыто: ${by.matched} из ${by.total} | \\u274C Без документа: ${by.unmatched}`);\n    lines.push('');\n  }\n  // Секция PL\n  if (pl.total > 0) {\n    lines.push(`${flagPl} Польша (${plBank})`);\n    lines.push(`\\u2705 Закрыто: ${pl.matched} из ${pl.total} | \\u274C Без документа: ${pl.unmatched}`);\n    lines.push('');\n  }\n\n  // Список незакрытых\n  const unmatchedTotal = (m.unmatchedBy || []).length + (m.unmatchedPl || []).length;\n  if (unmatchedTotal > 0) {\n    lines.push('\\u2501\\u2501\\u2501 Незакрытые позиции \\u2501\\u2501\\u2501');\n    const formatRow = (r, flag) => {\n      const cp = r['Контрагент (банк)'] || '\\u2014';\n      return `${flag} ${shortDate(r['Дата операции'])} | ${fmtAmount(r['Сумма'])} ${r['Валюта']} | ${r['Статус']} | ${cp}`;\n    };\n    (m.unmatchedBy || []).forEach(r => lines.push(formatRow(r, flagBy)));\n    (m.unmatchedPl || []).forEach(r => lines.push(formatRow(r, flagPl)));\n    lines.push('');\n    lines.push('Добавьте недостающие документы через бот.');\n    lines.push('');\n  }\n\n  lines.push(`\\uD83D\\uDCCA Реестр: ${spreadsheetUrl}`);\n  return lines.join('\\n');\n}\n\nconst text = allClosedOrEmpty ? buildClosedTemplate() : buildOpenTemplate();\n\nreturn [{ json: {\n  chatId: m.chatId,\n  isFromCron: m.isFromCron,\n  notificationText: text,\n  period: m.period\n}}];"
+      },
+      "id": "b9bf0a3b-8665-4a4e-aedb-b8e0dd305c76",
+      "name": "Build Notification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3392,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// === WF-07 [8] Build Recipients ===\n// Формирует список chat_id, которым нужно отправить уведомление.\n// MVP-логика:\n//   - manual /reconcile (есть chatId) → один получатель\n//   - cron (chatId пустой)            → TELEGRAM_ADMIN_CHAT_ID (через запятую)\n\nconst inp = $input.first().json;\nconst notificationText = inp.notificationText;\nconst period = inp.period;\n\nlet recipients = [];\nif (inp.chatId) {\n  recipients = [String(inp.chatId)];\n} else {\n  recipients = String($env.TELEGRAM_ADMIN_CHAT_ID || '')\n    .split(',')\n    .map(s => s.trim())\n    .filter(Boolean);\n}\n\nif (recipients.length === 0) {\n  // Защита: если ни одного получателя — отправлять некуда, но цепочка не должна падать.\n  return [{ json: { _empty: true, chatId: '', notificationText, period }}];\n}\n\nreturn recipients.map(chatId => ({\n  json: { chatId, notificationText, period, _empty: false }\n}));"
+      },
+      "id": "8914fcd1-36ff-4b1f-abd5-0b4023bbe1e1",
+      "name": "Build Recipients",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3616,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.notificationText }}",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "417b48c7-2c38-4b4a-ad96-8fc439047460",
+      "name": "Send Notification",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        3840,
+        368
+      ],
+      "webhookId": "wf07-send-notif",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true,
+      "credentials": {
+        "telegramApi": {
+          "id": "j5C9rNWpZCK0yhWr",
+          "name": "MINE TG"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// === WF-07 [E1] Build No-Data Notification ===\n// Если нет банковских транзакций для сверки за период.\n\nconst m = $('Match Engine').first().json;\nconst spreadsheetUrl = `https://docs.google.com/spreadsheets/d/${$env.GOOGLE_SHEETS_ID}/edit`;\n\nconst text =\n`\\u2139\\uFE0F Сверка за ${m.periodLabel}\nПериод: ${m.periodFromDdmmyyyy} \\u2014 ${m.periodToDdmmyyyy}\n\nНет банковских транзакций для сверки.\nЗагрузите выписку через /vpsk и повторите /reconcile.\n\n\\uD83D\\uDCCA Реестр: ${spreadsheetUrl}`;\n\n// Получатель: либо chatId, либо TELEGRAM_ADMIN_CHAT_ID\nlet recipients = [];\nif (m.chatId) {\n  recipients = [String(m.chatId)];\n} else {\n  recipients = String($env.TELEGRAM_ADMIN_CHAT_ID || '')\n    .split(',').map(s => s.trim()).filter(Boolean);\n}\n\nif (recipients.length === 0) {\n  return [{ json: { _empty: true, chatId: '', notificationText: text, period: m.period }}];\n}\n\nreturn recipients.map(chatId => ({\n  json: { chatId, notificationText: text, period: m.period, _empty: false }\n}));"
+      },
+      "id": "860025ac-8354-4045-b159-0cfaa3d5b8c8",
+      "name": "Build No-Data Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2272,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Сверка",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "ac3c58d2-8ad2-4286-8148-bb2e8b5189db",
+      "name": "Read Reconciliation Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1376,
+        688
+      ],
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "rnvzuybEF91V5uQQ",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// === WF-07 [M] Build Missing Message ===\n// Читает лист «Сверка» (последний снимок) и формирует список UNMATCHED.\n// Период игнорируется — лист всегда хранит последнюю сверку.\n\nconst m = $('Resolve Period & Mode').first().json;\nconst rows = $input.all().map(i => i.json).filter(r => r && r['bank_id']);\nconst spreadsheetUrl = `https://docs.google.com/spreadsheets/d/${$env.GOOGLE_SHEETS_ID}/edit`;\n\nconst flagBy = '\\uD83C\\uDDE7\\uD83C\\uDDFE';\nconst flagPl = '\\uD83C\\uDDF5\\uD83C\\uDDF1';\n\nfunction fmtAmount(n) {\n  const v = Number(n) || 0;\n  return Number.isInteger(v) ? String(v) : v.toFixed(2);\n}\nfunction shortDate(ddmmyyyy) {\n  const x = String(ddmmyyyy || '').match(/^(\\d{2})\\.(\\d{2})\\.\\d{4}$/);\n  return x ? `${x[1]}.${x[2]}` : (ddmmyyyy || '\\u2014');\n}\n\n// Если лист пустой → сверки ещё не было\nif (rows.length === 0) {\n  const text =\n`\\u2139\\uFE0F Сверка ещё не запускалась\n\nЗапустите /reconcile или дождитесь автосверки 1-го числа.\n\n\\uD83D\\uDCCA Реестр: ${spreadsheetUrl}`;\n  return [{ json: { chatId: m.chatId, notificationText: text }}];\n}\n\nconst unmatched = rows.filter(r => String(r['Статус сверки']).trim() === 'UNMATCHED');\nconst byList = unmatched.filter(r => r['Страна'] === 'Беларусь');\nconst plList = unmatched.filter(r => r['Страна'] === 'Польша');\n\nconst lines = [`\\uD83D\\uDCCB Незакрытые позиции (последняя сверка)`, ''];\n\nif (byList.length > 0) {\n  lines.push(`${flagBy} Беларусь \\u2014 ${byList.length}`);\n  byList.forEach(r => {\n    const cp = r['Контрагент (банк)'] || '\\u2014';\n    lines.push(`  ${shortDate(r['Дата операции'])} | ${fmtAmount(r['Сумма'])} ${r['Валюта']} | ${r['Статус']} | ${cp}`);\n  });\n  lines.push('');\n}\nif (plList.length > 0) {\n  lines.push(`${flagPl} Польша \\u2014 ${plList.length}`);\n  plList.forEach(r => {\n    const cp = r['Контрагент (банк)'] || '\\u2014';\n    lines.push(`  ${shortDate(r['Дата операции'])} | ${fmtAmount(r['Сумма'])} ${r['Валюта']} | ${r['Статус']} | ${cp}`);\n  });\n  lines.push('');\n}\n\nif (byList.length === 0 && plList.length === 0) {\n  lines.length = 0;\n  lines.push(`\\u2705 Все позиции последней сверки закрыты.`);\n  lines.push('');\n}\n\nlines.push(`\\uD83D\\uDCCA Реестр: ${spreadsheetUrl}`);\n\nreturn [{ json: {\n  chatId: m.chatId,\n  notificationText: lines.join('\\n')\n}}];"
+      },
+      "id": "b25afd1c-240f-4113-845c-4bf71da6a3ef",
+      "name": "Build Missing Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1600,
+        688
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.notificationText }}",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "d4930596-2185-448b-9323-cc86a4573428",
+      "name": "Send Missing",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1824,
+        688
+      ],
+      "webhookId": "wf07-missing-send",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true,
+      "credentials": {
+        "telegramApi": {
+          "id": "j5C9rNWpZCK0yhWr",
+          "name": "MINE TG"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// === WF-07 [R] Build Report Message ===\n// /report — простая ссылка на Google Sheets.\n// MVP. Пост-MVP: можно добавить мини-сводку по последней сверке.\n\nconst m = $('Resolve Period & Mode').first().json;\nconst spreadsheetUrl = `https://docs.google.com/spreadsheets/d/${$env.GOOGLE_SHEETS_ID}/edit`;\n\nconst text =\n`\\uD83D\\uDCCA Отчёт\n\nРеестр и листы Слоя 2 (Банк, Сверка):\n${spreadsheetUrl}\n\nДля свежей сверки запустите /reconcile.\nДля списка незакрытых позиций \\u2014 /missing.`;\n\nreturn [{ json: {\n  chatId: m.chatId,\n  notificationText: text\n}}];"
+      },
+      "id": "c82d3b1c-5d36-44a6-a7cd-9deeebc0512a",
+      "name": "Build Report Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1376,
+        896
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.notificationText }}",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "c7cfb4e2-6b92-4a3e-8c86-c3a924b26dc6",
+      "name": "Send Report",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1600,
+        896
+      ],
+      "webhookId": "wf07-report-send",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true,
+      "credentials": {
+        "telegramApi": {
+          "id": "j5C9rNWpZCK0yhWr",
+          "name": "MINE TG"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: true, chatId: $json.chatId || '', mode: 'reconcile' }) }}",
+        "options": {}
+      },
+      "id": "19755c3b-021e-4394-90d1-1e6c58baac1e",
+      "name": "Respond Reconcile",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        4064,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: true, chatId: $json.chatId || '', mode: 'missing' }) }}",
+        "options": {}
+      },
+      "id": "841cfbd5-67f6-4daf-8644-7c190ed41b8e",
+      "name": "Respond Missing",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2048,
+        688
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: true, chatId: $json.chatId || '', mode: 'report' }) }}",
+        "options": {}
+      },
+      "id": "618d3860-fb1c-4038-9898-0c0921cfd90c",
+      "name": "Respond Report",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1824,
+        896
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Start Webhook": {
+      "main": [
+        [
+          {
+            "node": "Resolve Period & Mode",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule (1st 09:00 Minsk)": {
+      "main": [
+        [
+          {
+            "node": "Resolve Period & Mode",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Period & Mode": {
+      "main": [
+        [
+          {
+            "node": "Mode Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mode Switch": {
+      "main": [
+        [
+          {
+            "node": "Read Bank Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Read Reconciliation Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Report Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Bank Sheet": {
+      "main": [
+        [
+          {
+            "node": "Read Registry Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Registry Sheet": {
+      "main": [
+        [
+          {
+            "node": "Match Engine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Match Engine": {
+      "main": [
+        [
+          {
+            "node": "Has Data?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Data?": {
+      "main": [
+        [
+          {
+            "node": "Explode Bank Updates",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build No-Data Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Explode Bank Updates": {
+      "main": [
+        [
+          {
+            "node": "Update Bank Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Bank Sheet": {
+      "main": [
+        [
+          {
+            "node": "Clear Reconciliation Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clear Reconciliation Sheet": {
+      "main": [
+        [
+          {
+            "node": "Explode Recon Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Explode Recon Rows": {
+      "main": [
+        [
+          {
+            "node": "Append Reconciliation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append Reconciliation": {
+      "main": [
+        [
+          {
+            "node": "Build Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Notification": {
+      "main": [
+        [
+          {
+            "node": "Build Recipients",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Recipients": {
+      "main": [
+        [
+          {
+            "node": "Send Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Notification": {
+      "main": [
+        [
+          {
+            "node": "Respond Reconcile",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build No-Data Message": {
+      "main": [
+        [
+          {
+            "node": "Send Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Reconciliation Sheet": {
+      "main": [
+        [
+          {
+            "node": "Build Missing Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Missing Message": {
+      "main": [
+        [
+          {
+            "node": "Send Missing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Missing": {
+      "main": [
+        [
+          {
+            "node": "Respond Missing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Report Message": {
+      "main": [
+        [
+          {
+            "node": "Send Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Report": {
+      "main": [
+        [
+          {
+            "node": "Respond Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "c3c120f1-715e-4b8d-96c3-34cb8c574375",
+  "meta": {
+    "instanceId": "cca9a5f9532f6dbec2cbee648be68fdaa6fd41fb5d6f078ff1e440e4d1b9b1c5"
+  },
+  "id": "qAEEeUePqPkkwlNU",
+  "tags": []
+}

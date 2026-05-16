@@ -1,0 +1,809 @@
+{
+  "name": "WF-01: Telegram Router",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
+      "id": "eaba46e5-887a-45e4-b1bc-e779ebbc4594",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -4464,
+        2432
+      ],
+      "webhookId": "wf01-tg",
+      "credentials": {
+        "telegramApi": {
+          "id": "j5C9rNWpZCK0yhWr",
+          "name": "MINE TG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// === WHITELIST + ROUTER (v2) ===\n// Правка аудита: photo mime_type не хардкодим в image/jpeg — Telegram может\n// прислать PNG-фото тоже; реальная MIME-нормализация делается в WF-02/03.\nconst allowed = ($env.TELEGRAM_ADMIN_CHAT_ID || '').split(',').map(id => id.trim());\nconst msg = $input.first().json.message || {};\nconst chatId = String(msg.chat?.id || '');\n\nif (!chatId || !allowed.includes(chatId)) {\n  return [];\n}\n\nlet outputIndex = 3;\nlet payload = { chatId };\n\nif (msg.photo && msg.photo.length > 0) {\n  outputIndex = 0;\n  payload.type = 'photo';\n  payload.file_id = msg.photo[msg.photo.length - 1].file_id;\n  payload.mime_type = 'image/jpeg'; // Telegram сжимает фото в JPEG, но WF-02/03 всё равно нормализует MIME по magic-bytes\n} else if (msg.document) {\n  const mime = msg.document.mime_type || 'application/octet-stream';\n  // Пропускаем любой документ — WF-02/03 сам выполнит MIME-нормализацию (NFR-11)\n  outputIndex = 0;\n  payload.type = 'document';\n  payload.file_id = msg.document.file_id;\n  payload.mime_type = mime;\n  payload.file_size = msg.document.file_size || 0;\n} else if (msg.voice) {\n  outputIndex = 0;\n  payload.type = 'voice';\n  payload.file_id = msg.voice.file_id;\n} else if (msg.text && msg.text.startsWith('/')) {\n  outputIndex = 1;\n  payload.text = msg.text;\n} else if (msg.text) {\n  outputIndex = 0;\n  payload.type = 'text';\n  payload.text = msg.text;\n}\n\npayload.outputIndex = outputIndex;\nreturn [{ json: payload }];"
+      },
+      "id": "a4e49956-5a49-44a2-88c3-7c164a47e271",
+      "name": "Whitelist + Router",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -4240,
+        2432
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "expression",
+        "output": "={{ $json.outputIndex }}"
+      },
+      "id": "7c63952d-7546-45e6-9e77-56f751f0c005",
+      "name": "Main Switch",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        -4016,
+        2400
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://n8ninvoice.qirelab.com/webhook/wf02-03-parse",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  chatId: $json.chatId,\n  type: $json.type,\n  file_id: $json.file_id || '',\n  mime_type: $json.mime_type || '',\n  text: $json.text || '',\n  file_size: $json.file_size || 0\n}) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 60000
+        }
+      },
+      "id": "e8fbe4d5-98e3-41b5-bcf5-33f67820ac1d",
+      "name": "Call WF0203",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -3120,
+        1952
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Получаем ответ от HTTP Request к WF-02/03\nconst raw = $input.first().json;\nconst data = raw.confirmationText ? raw : (raw.data || raw.body || raw);\n\nif (!data.confirmationText) {\n  const prevChatId = $('Whitelist + Router').first().json.chatId;\n  return [{ json: {\n    chatId: prevChatId,\n    confirmationText: '⚠️ Ошибка обработки. Попробуйте ещё раз.'\n  }}];\n}\n\nreturn [{ json: {\n  chatId: String(data.chatId || $('Whitelist + Router').first().json.chatId),\n  confirmationText: data.confirmationText\n}}];"
+      },
+      "id": "407b6dc5-a223-49c3-bba1-0085e0d367ba",
+      "name": "Merge Confirmation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2896,
+        1952
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.confirmationText }}",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "cfce764d-265d-4130-9927-7a7b409d8417",
+      "name": "Send Confirmation",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -2672,
+        1952
+      ],
+      "webhookId": "wf01-send-confirm",
+      "credentials": {
+        "telegramApi": {
+          "id": "j5C9rNWpZCK0yhWr",
+          "name": "MINE TG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// === COMMAND HANDLER v2.3 ===\n// /vpsk       → routeTo: 'wf06-stmt'  (запрашиваем выписку)\n// /reconcile  → routeTo: 'wf07'       (сверка BY + PL)\n// /missing    → routeTo: 'wf07-misc'  (незакрытые позиции)\n// /report     → routeTo: 'wf07-misc'  (последний отчёт)\n// остальные   → routeTo: 'local'      (текстовый ответ прямо здесь)\n\nconst chatId = $input.first().json.chatId;\nconst text   = $input.first().json.text || '';\nconst parts  = text.trim().split(/\\s+/);\nconst cmd    = parts[0].toLowerCase().replace(/@\\w+/, '');\nconst args   = parts.slice(1);\n\n// /vpsk\nif (cmd === '/vpsk') {\n  return [{ json: {\n    chatId,\n    routeTo: 'wf06-stmt',\n    reply: '\\uD83D\\uDCCE Пришлите выписку банка (PDF или DOCX).\\n\\n'         + 'Поддерживаются:\\n'         + '\\uD83C\\uDDE7\\uD83C\\uDDFE Приорбанк BY (.docx)\\n'         + '\\uD83C\\uDDF5\\uD83C\\uDDF1 PKO Bank Polski PL (.pdf)\\n\\n'         + 'Сессия действует 10 минут.'\n  }}];\n}\n\n// /reconcile → WF-07\nif (cmd === '/reconcile') {\n  let period = '';\n  const p = args[0] || '';\n  if (/^\\d{4}-\\d{2}$/.test(p)) period = p;\n  return [{ json: { chatId, routeTo: 'wf07', period, mode: 'reconcile', reply: '' } }];\n}\n\n// /missing → WF-07\nif (cmd === '/missing') {\n  return [{ json: { chatId, routeTo: 'wf07-misc', mode: 'missing', reply: '' } }];\n}\n\n// /report → WF-07\nif (cmd === '/report') {\n  return [{ json: { chatId, routeTo: 'wf07-misc', mode: 'report', reply: '' } }];\n}\n\n// Локальные ответы\nconst replies = {\n  '/start':  '\\uD83D\\uDC4B Привет!\\n\\nОтправьте PDF, фото документа, голосовое или текст о платеже — я запишу в реестр.\\n\\n/help — справка',\n  '/help':   '\\uD83D\\uDCD6 Команды:\\n/status — последние записи\\n/settings — настройки\\n/vpsk — загрузить выписку банка\\n/reconcile [YYYY-MM] — сверка (BY + PL)\\n/missing — незакрытые позиции\\n/report — последний отчёт\\n/cancel — отмена',\n  '/cancel': '\\u2705 Отменено.',\n  '/status': '\\uD83D\\uDCCB Последние записи — в листе Реестр.'\n};\n\nlet reply = replies[cmd];\n\nif (!reply && cmd === '/settings') {\n  const sub = args.join(' ');\n  if (!sub)                           reply = '\\u2699\\uFE0F Настройки:\\n/settings recipients list\\n/settings recipients add @user\\n/settings recipients remove @user\\n/settings schedule show';\n  else if (sub === 'recipients list') reply = '\\uD83D\\uDCCB Получатели: откройте лист «Получатели» в Google Sheets.';\n  else if (sub.startsWith('recipients add'))    reply = '\\u2705 Добавьте строку в лист «Получатели»: chat_id | username | owner/accountant | TRUE';\n  else if (sub.startsWith('recipients remove')) reply = '\\u2705 Поставьте active=FALSE в листе «Получатели».';\n  else if (sub === 'schedule show')   reply = '\\uD83D\\uDD50 Сверка: 1-е число, 09:00 UTC+3 (Europe/Minsk)';\n  else                                reply = `\\u2753 Неизвестная подкоманда: ${sub}`;\n}\n\nif (!reply) reply = `\\u2753 Неизвестная команда: ${cmd}`;\n\nreturn [{ json: { chatId, routeTo: 'local', reply } }];\n"
+      },
+      "id": "e30a48e7-ddc8-45f3-aff4-f8c152c25a90",
+      "name": "Command Handler",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -3792,
+        2432
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "expression",
+        "output": "={{ $json.routeTo === 'wf07' ? 0 : ($json.routeTo === 'wf07-misc') ? 1 : $json.routeTo === 'wf06-stmt' ? 2 : 3 }}"
+      },
+      "id": "6ffc4d5d-a6bf-4d16-a1f5-bb54dab49d64",
+      "name": "Command Route Switch",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        -3568,
+        2400
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://n8ninvoice.qirelab.com/webhook/wf07-reconcile",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chatId: $json.chatId, period: $json.period || '', mode: $json.mode || 'reconcile'}) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 60000
+        }
+      },
+      "id": "c649634b-57b7-4c3c-8393-bb4bc5aa1312",
+      "name": "Call WF07",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -3344,
+        2048
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.reply }}",
+        "additionalFields": {}
+      },
+      "id": "7c1cc916-c98c-4917-9df4-c5c2af9e5d51",
+      "name": "Send Command Reply",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -3344,
+        2432
+      ],
+      "webhookId": "wf01-send-cmd",
+      "credentials": {
+        "telegramApi": {
+          "id": "j5C9rNWpZCK0yhWr",
+          "name": "MINE TG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $input.first().json;\nreturn [{ json: { chatId: d.chatId, text: d.errorMessage || 'Не понимаю формат. Отправьте PDF/JPG/PNG, голосовое или текст.' } }];"
+      },
+      "id": "9d1dcdf8-6784-40f8-b207-c6c6004322de",
+      "name": "Unknown Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -3792,
+        2656
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {}
+      },
+      "id": "ea834a02-c65b-4233-9ab9-63b10b6be7be",
+      "name": "Send Unknown Error",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -3568,
+        2656
+      ],
+      "webhookId": "wf01-send-unk",
+      "credentials": {
+        "telegramApi": {
+          "id": "j5C9rNWpZCK0yhWr",
+          "name": "MINE TG"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "eea465a2-89b0-4cb7-91a3-3775c055edaf",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        -4464,
+        3040
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "let chatId = '';\ntry { chatId = $('Whitelist + Router').first().json.chatId || ''; } catch(e) { return []; }\nif (!chatId) return [];\nreturn [{ json: { chatId, text: '⚠️ Ошибка. Попробуйте ещё раз.' } }];"
+      },
+      "id": "eb1bfbe7-dfad-45e9-aa5e-8a4a95e296c6",
+      "name": "Build Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -4240,
+        3040
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {}
+      },
+      "id": "2bc9a957-66eb-4e17-985d-68d463e6fd60",
+      "name": "Send Error",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -4016,
+        3040
+      ],
+      "webhookId": "wf01-send-err",
+      "credentials": {
+        "telegramApi": {
+          "id": "j5C9rNWpZCK0yhWr",
+          "name": "MINE TG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Сессии",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "chat_id",
+              "lookupValue": "={{ $json.chatId }}"
+            }
+          ]
+        },
+        "options": {
+          "returnFirstMatch": true
+        }
+      },
+      "id": "f1c2dd86-af2f-4ced-971e-f9507f531bbe",
+      "name": "Check VPSK Session",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -3792,
+        1856
+      ],
+      "alwaysOutputData": true,
+      "retryOnFail": false,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "rnvzuybEF91V5uQQ",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// === EVALUATE SESSION ===\n// Проверяет, активна ли сессия /vpsk для данного chatId.\n// Сессия активна только для файлов (photo/document), не для voice/text.\n// Входные данные: результат Check VPSK Session (строка из листа Сессии или пустой объект).\n// Оригинальные данные роутинга берём из Whitelist + Router.\n\nconst sessionData = $input.first().json;\nconst origData    = $('Whitelist + Router').first().json;\n\n// Сессия актуальна только для файлов\nconst isFile = (origData.type === 'photo' || origData.type === 'document');\n\nlet sessionActive = false;\nif (isFile && sessionData && sessionData.chat_id && sessionData.command === 'vpsk') {\n  try {\n    const expires = new Date(sessionData.expires_at);\n    if (expires > new Date()) sessionActive = true;\n  } catch (e) {}\n}\n\nreturn [{\n  json: {\n    ...origData,\n    _sessionRoute: sessionActive ? 1 : 0,\n    _sessionChatId: sessionData.chat_id || ''\n  }\n}];\n"
+      },
+      "id": "171619d2-41af-4050-b7ed-510b44e5d1c6",
+      "name": "Evaluate Session",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -3568,
+        1856
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 2,
+        "output": "={{ $json._sessionRoute }}"
+      },
+      "id": "13ec3e2c-bcc8-4525-afcc-65c93c3bfb8f",
+      "name": "Session Route Switch",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        -3344,
+        1856
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Сессии",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "chat_id": "={{ $json.chatId }}",
+            "command": "",
+            "expires_at": "2000-01-01T00:00:00.000Z"
+          },
+          "matchingColumns": [
+            "chat_id"
+          ],
+          "schema": [
+            {
+              "id": "chat_id",
+              "displayName": "chat_id",
+              "required": true,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "command",
+              "displayName": "command",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "expires_at",
+              "displayName": "expires_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "23032011-efa2-4905-8d67-7f7808702173",
+      "name": "Clear VPSK Session",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -3120,
+        1760
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "rnvzuybEF91V5uQQ",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://n8ninvoice.qirelab.com/webhook/wf06-stmt",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  chatId:    $('Whitelist + Router').item.json.chatId,\n  type:      $('Whitelist + Router').item.json.type,\n  file_id:   $('Whitelist + Router').item.json.file_id   || '',\n  mime_type: $('Whitelist + Router').item.json.mime_type || '',\n  file_size: $('Whitelist + Router').item.json.file_size || 0\n}) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 60000
+        }
+      },
+      "id": "2239ef6d-06d7-4f66-865e-94b8564556bb",
+      "name": "Call WF06 Stmt",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -2896,
+        1760
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://n8ninvoice.qirelab.com/webhook/wf07-reconcile",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chatId: $json.chatId, mode: $json.mode || 'missing'}) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 60000
+        }
+      },
+      "id": "868f769c-ebcd-4b44-88e6-bc1d756c6485",
+      "name": "Call WF07 Missing",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -3344,
+        2240
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Сессии",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "command": "vpsk",
+            "expires_at": "={{ new Date(Date.now() + 600000).toISOString() }}",
+            "chat_id": "={{ $json.chatId }}"
+          },
+          "matchingColumns": [
+            "chat_id"
+          ],
+          "schema": [
+            {
+              "id": "chat_id",
+              "displayName": "chat_id",
+              "required": true,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "command",
+              "displayName": "command",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "expires_at",
+              "displayName": "expires_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "43181d3f-e963-4837-9468-8bfca4a71f0e",
+      "name": "Write VPSK Session",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -3344,
+        2624
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "rnvzuybEF91V5uQQ",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.reply }}",
+        "additionalFields": {}
+      },
+      "id": "dc6ae76c-6c5a-402f-83d3-533e8859fbca",
+      "name": "Send VPSK Prompt",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -3344,
+        2816
+      ],
+      "webhookId": "wf01-send-vpsk",
+      "credentials": {
+        "telegramApi": {
+          "id": "j5C9rNWpZCK0yhWr",
+          "name": "MINE TG"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Whitelist + Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Whitelist + Router": {
+      "main": [
+        [
+          {
+            "node": "Main Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Main Switch": {
+      "main": [
+        [
+          {
+            "node": "Check VPSK Session",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Command Handler",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [],
+        [
+          {
+            "node": "Unknown Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call WF0203": {
+      "main": [
+        [
+          {
+            "node": "Merge Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Confirmation": {
+      "main": [
+        [
+          {
+            "node": "Send Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Command Handler": {
+      "main": [
+        [
+          {
+            "node": "Command Route Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Command Route Switch": {
+      "main": [
+        [
+          {
+            "node": "Call WF07",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Call WF07 Missing",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Write VPSK Session",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send VPSK Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Command Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Unknown Error": {
+      "main": [
+        [
+          {
+            "node": "Send Unknown Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Build Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Error": {
+      "main": [
+        [
+          {
+            "node": "Send Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check VPSK Session": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Session",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Session": {
+      "main": [
+        [
+          {
+            "node": "Session Route Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Session Route Switch": {
+      "main": [
+        [
+          {
+            "node": "Call WF0203",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Clear VPSK Session",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clear VPSK Session": {
+      "main": [
+        [
+          {
+            "node": "Call WF06 Stmt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "8b5f710c-7ffb-48de-8d7b-aae3e415b0d6",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "cca9a5f9532f6dbec2cbee648be68fdaa6fd41fb5d6f078ff1e440e4d1b9b1c5"
+  },
+  "id": "Ecbaj5Uth9BsyLTD",
+  "tags": []
+}
