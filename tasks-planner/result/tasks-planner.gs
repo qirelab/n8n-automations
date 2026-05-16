@@ -256,38 +256,13 @@ function archivePlannedTasks() {
     archiveSheet.getRange(1, 1, 1, archiveHeaders.length).setValues([archiveHeaders]);
   }
 
-  // Archive has its own numeration — locate the Number column inside the archive layout
-  // and renumber rows being moved so they continue from the current max in Archive.
-  var numberColInArchive = -1;
-  if (layout.colMap.number >= 0) {
-    for (var nc = 0; nc < keepCols.length; nc++) {
-      if (keepCols[nc] === layout.colMap.number) {
-        numberColInArchive = nc;
-        break;
-      }
-    }
-  }
-
-  if (numberColInArchive >= 0) {
-    var nextNumber = 1;
-    if (archiveSheet.getLastRow() > 1) {
-      var existing = archiveSheet.getRange(2, numberColInArchive + 1,
-        archiveSheet.getLastRow() - 1, 1).getValues();
-      var maxNum = 0;
-      for (var en = 0; en < existing.length; en++) {
-        var n = Number(existing[en][0]);
-        if (!isNaN(n) && n > maxNum) maxNum = n;
-      }
-      nextNumber = maxNum + 1;
-    }
-    for (var rn = 0; rn < rowsToArchive.length; rn++) {
-      rowsToArchive[rn][numberColInArchive] = nextNumber++;
-    }
-  }
-
   // Append archived rows below the existing content
   var startRow = archiveSheet.getLastRow() + 1;
   archiveSheet.getRange(startRow, 1, rowsToArchive.length, archiveHeaders.length).setValues(rowsToArchive);
+
+  // Archive has its own numeration starting from 1 — renumber the entire Archive
+  // so old + newly appended rows form a clean 1..N sequence.
+  renumberSheet(archiveSheet);
 
   // Clear archived rows from the main sheet, then compact and renumber
   for (var r = 0; r < rowIndicesToClear.length; r++) {
