@@ -1,0 +1,555 @@
+{
+  "name": "Tasks Saving — Voice to QIRElab Sheet",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
+      "id": "5ca45bfd-a1e8-4726-941a-d14912ba7f21",
+      "name": "Telegram Trigger (Voice)",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        8880,
+        3456
+      ],
+      "webhookId": "d672bd98-40da-485e-aa40-9e7068f29c04",
+      "credentials": {
+        "telegramApi": {
+          "id": "dt0yy1d2sCqLCBSJ",
+          "name": "Telegram account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "voice-check",
+              "leftValue": "={{ $json.message.voice ? true : false }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "0cf84771-bbb9-4d92-83d3-3f787a840200",
+      "name": "Is Voice Message?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        9104,
+        3456
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Telegram Trigger (Voice)').item.json.message.chat.id }}",
+        "text": "Пожалуйста, отправьте голосовое сообщение с описанием задачи.",
+        "additionalFields": {}
+      },
+      "id": "1b2f29f4-1bfb-4a39-885f-96c9dd939247",
+      "name": "Telegram Reject Non-Voice",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        9344,
+        3584
+      ],
+      "webhookId": "7837b6ed-20f1-4e22-9b3e-19deb05799f5",
+      "credentials": {
+        "telegramApi": {
+          "id": "dt0yy1d2sCqLCBSJ",
+          "name": "Telegram account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "fileId": "={{ $('Telegram Trigger (Voice)').item.json.message.voice.file_id }}",
+        "additionalFields": {}
+      },
+      "id": "7a0d45f7-1902-43b4-b17b-15a87dd40a3d",
+      "name": "Telegram Download Voice",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        9344,
+        3328
+      ],
+      "webhookId": "fae58485-ce4c-42e2-bb9d-be183e67c751",
+      "credentials": {
+        "telegramApi": {
+          "id": "dt0yy1d2sCqLCBSJ",
+          "name": "Telegram account 2"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "resource": "audio",
+        "operation": "transcribe",
+        "options": {}
+      },
+      "id": "cac8f119-ee99-40ea-a408-daae49d37a61",
+      "name": "OpenAI Transcribe (Whisper)",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.6,
+      "position": [
+        9584,
+        3328
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "prRM7z6lJcdDjx0X",
+          "name": "OpenAI account"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "Ты помощник, который структурирует задачи, надиктованные собственником бизнеса. Получив текст задачи, верни СТРОГО валидный JSON без markdown, без комментариев, без пояснений, ровно с такими полями:\n{\n  \"Наименование\": \"\",\n  \"Приоритет\": \"\",\n  \"Характер задач\": \"\",\n  \"Время\": \"\",\n  \"Проект\": \"\",\n  \"Сфера\": \"\",\n  \"Запланировано\": \"\",\n  \"Комментарий\": \"\"\n}\n\nПравила:\n- Наименование: краткое название задачи.\n- Приоритет: одно из A, B, C, D. Если приоритет явно указан в сообщении — использовать его. Если в сообщении явно сказано про срочность/важность — определить по смыслу (A=срочно и важно, B=важно но не срочно, C=срочно но не важно, D=не срочно и не важно). Если в сообщении НЕТ ни явного приоритета, ни явных указаний на срочность/важность — по умолчанию ставь \"B\".\n- Характер задач: одно из \"Краткосрочные\", \"Бюджетируемые\", \"Привязанные ко времени\". Применяй правила в таком порядке:\n  1. Если в сообщении задача назначена на конкретную дату и время (или указан дедлайн/срок/день недели/конкретное время) — \"Привязанные ко времени\".\n  2. Иначе если в сообщении указана продолжительность задачи (в часах, минутах или комбинации) — \"Бюджетируемые\".\n  3. Иначе по умолчанию — \"Краткосрочные\".\n  Если есть и срок, и продолжительность — \"Привязанные ко времени\", а продолжительность записать в поле Время.\n- Время: заполнять ТОЛЬКО если в задаче есть явная оценка продолжительности (минуты/часы). ВСЕГДА конвертировать в часы как десятичное число с точкой (не запятой). Примеры конвертации: 15 минут → 0.25; 30 минут → 0.5; 45 минут → 0.75; 1 час → 1; 1 час 30 минут → 1.5; 2 часа → 2; 2.5 часа → 2.5; 3 часа 15 минут → 3.25. Возвращай ТОЛЬКО число (например \"0.5\"), без единиц измерения и без слова \"час\". Если оценки продолжительности нет — пустая строка.\n- Проект: заполнять, только если задача явно относится к проекту; иначе пустая строка.\n- Сфера: заполнять, только если Проект пустой. Выбрать одно из: Финансы, Маркетинг, Продажи, HR, Стратегия, Производство, Право, Бизнес-модель, Операционка.\n- Запланировано: всегда пустая строка.\n- Комментарий: детали, которые не попали в другие поля.\n\nОтвечай ТОЛЬКО JSON-объектом, без обёрток, без префиксов.",
+              "role": "system"
+            },
+            {
+              "content": "={{ $json.text }}"
+            }
+          ]
+        },
+        "jsonOutput": true,
+        "options": {
+          "temperature": 0.2
+        }
+      },
+      "id": "533750bb-3a17-4f6d-8eb7-27cd23bfcf89",
+      "name": "OpenAI Structure Task",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.6,
+      "position": [
+        9824,
+        3328
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "prRM7z6lJcdDjx0X",
+          "name": "OpenAI account"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Извлекаем структурированный JSON из ответа OpenAI.\nconst raw = $json.message?.content ?? $json.content ?? $json.output ?? $json.text ?? $json;\nlet parsed;\nif (typeof raw === 'string') {\n  try {\n    parsed = JSON.parse(raw);\n  } catch (e) {\n    const match = raw.match(/\\{[\\s\\S]*\\}/);\n    if (!match) throw new Error('OpenAI did not return JSON: ' + raw);\n    parsed = JSON.parse(match[0]);\n  }\n} else {\n  parsed = raw;\n}\n\nreturn {\n  json: {\n    task: {\n      Наименование: parsed['Наименование'] ?? '',\n      Приоритет: parsed['Приоритет'] ?? '',\n      'Характер задач': parsed['Характер задач'] ?? '',\n      Время: parsed['Время'] ?? '',\n      Проект: parsed['Проект'] ?? '',\n      Сфера: parsed['Сфера'] ?? '',\n      Запланировано: parsed['Запланировано'] ?? '',\n      Комментарий: parsed['Комментарий'] ?? ''\n    },\n    chatId: $('Telegram Trigger (Voice)').item.json.message.chat.id,\n    transcript: $('OpenAI Transcribe (Whisper)').item.json.text\n  }\n};"
+      },
+      "id": "1c7c7f13-fcd8-420f-af57-d898a38ad9a5",
+      "name": "Parse OpenAI JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10064,
+        3328
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1ZHpmKY-e4IphN6z1_1Md2nsfUKfTthUp-RD8ggBU0ps",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "QIRElab",
+          "mode": "name"
+        },
+        "options": {
+          "returnFirstMatch": false
+        }
+      },
+      "id": "a4f2d811-3b21-4d6e-9c1f-7e3a92f4bd11",
+      "name": "Read QIRElab Existing",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        10304,
+        3328
+      ],
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "BHoxFlHoBI0EeMsh",
+          "name": "Google Sheets account 2"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Считаем max(Номер) из QIRElab и инкрементируем.\n// Если лист пустой — стартуем с 1.\nconst rows = $input.all();\nlet max = 0;\nfor (const r of rows) {\n  const n = Number(String(r.json['Номер'] ?? '').replace(',', '.'));\n  if (Number.isFinite(n) && n > max) max = n;\n}\nconst nextNumber = max + 1;\n\nconst parsed = $('Parse OpenAI JSON').first().json;\nconst task = parsed.task || {};\n\n// pairedItem нужен, чтобы n8n мог проследить линию данных от триггера —\n// иначе downstream-ноды (например, Telegram Notify Success) выдают\n// \"Paired item data ... unavailable\" при обращении через $('...').item.\nreturn [{\n  json: {\n    Номер: nextNumber,\n    Наименование: task['Наименование'] ?? '',\n    Приоритет: task['Приоритет'] ?? '',\n    'Характер задач': task['Характер задач'] ?? '',\n    Время: task['Время'] ?? '',\n    Проект: task['Проект'] ?? '',\n    Сфера: task['Сфера'] ?? '',\n    Запланировано: task['Запланировано'] ?? '',\n    Комментарий: task['Комментарий'] ?? '',\n    chatId: parsed.chatId,\n    transcript: parsed.transcript || ''\n  },\n  pairedItem: { item: 0 }\n}];"
+      },
+      "id": "6cdee2ed-60e3-45b9-898a-8b30e0018ea9",
+      "name": "Compute Next Number",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10544,
+        3328
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1ZHpmKY-e4IphN6z1_1Md2nsfUKfTthUp-RD8ggBU0ps",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "QIRElab",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Номер": "={{ $json['Номер'] }}",
+            "Наименование": "={{ $json['Наименование'] }}",
+            "Приоритет": "={{ $json['Приоритет'] }}",
+            "Характер задач": "={{ $json['Характер задач'] }}",
+            "Время": "={{ $json['Время'] }}",
+            "Проект": "={{ $json['Проект'] }}",
+            "Сфера": "={{ $json['Сфера'] }}",
+            "Запланировано": "={{ $json['Запланировано'] }}",
+            "Комментарий": "={{ $json['Комментарий'] }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Номер",
+              "displayName": "Номер",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "Наименование",
+              "displayName": "Наименование",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "Приоритет",
+              "displayName": "Приоритет",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "Характер задач",
+              "displayName": "Характер задач",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "Время",
+              "displayName": "Время",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "Проект",
+              "displayName": "Проект",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "Сфера",
+              "displayName": "Сфера",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "Запланировано",
+              "displayName": "Запланировано",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "Комментарий",
+              "displayName": "Комментарий",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "bc193071-19bf-44ac-8fe4-adb51dde5073",
+      "name": "Append Row to QIRElab",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        10784,
+        3328
+      ],
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "BHoxFlHoBI0EeMsh",
+          "name": "Google Sheets account 2"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Telegram Trigger (Voice)').item.json.message.chat.id }}",
+        "text": "=❌ Не удалось сохранить задачу.\n\n*Шаг:* {{ $json.node?.name || $node?.name || 'неизвестный' }}\n*Ошибка:* {{ $json.error?.message || $json.error?.description || $json.error || 'неизвестная ошибка' }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "20c47d1d-36a2-4cd8-8653-7502955e9a22",
+      "name": "Telegram Notify Error",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        10544,
+        3584
+      ],
+      "webhookId": "3a0f6f31-568e-439a-acda-4c33d0118f6e",
+      "credentials": {
+        "telegramApi": {
+          "id": "dt0yy1d2sCqLCBSJ",
+          "name": "Telegram account 2"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Telegram Trigger (Voice)": {
+      "main": [
+        [
+          {
+            "node": "Is Voice Message?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Voice Message?": {
+      "main": [
+        [
+          {
+            "node": "Telegram Download Voice",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram Reject Non-Voice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram Download Voice": {
+      "main": [
+        [
+          {
+            "node": "OpenAI Transcribe (Whisper)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram Notify Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Transcribe (Whisper)": {
+      "main": [
+        [
+          {
+            "node": "OpenAI Structure Task",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram Notify Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Structure Task": {
+      "main": [
+        [
+          {
+            "node": "Parse OpenAI JSON",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram Notify Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse OpenAI JSON": {
+      "main": [
+        [
+          {
+            "node": "Read QIRElab Existing",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram Notify Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read QIRElab Existing": {
+      "main": [
+        [
+          {
+            "node": "Compute Next Number",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram Notify Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute Next Number": {
+      "main": [
+        [
+          {
+            "node": "Append Row to QIRElab",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram Notify Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append Row to QIRElab": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Telegram Notify Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "default",
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "versionId": "9c2841ef-72d1-4a8e-bfa4-c8e3f5d12a09",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "cca9a5f9532f6dbec2cbee648be68fdaa6fd41fb5d6f078ff1e440e4d1b9b1c5"
+  },
+  "id": "7k9SNQHup6m3Gjtk",
+  "tags": []
+}
