@@ -63,7 +63,10 @@ var CONFIG = {
   SHORT_TASK_MIN: 6,
   EVENT_COLOR: CalendarApp.EventColor.CYAN,
   EVENT_PREFIX: '[Auto] ',
-  GEMINI_API_KEY: '***REMOVED_GEMINI_KEY***'  // Вставьте свой API-ключ Gemini (бесплатный): https://aistudio.google.com/app/apikey
+  GEMINI_API_KEY: '***REMOVED_GEMINI_KEY***',  // Вставьте свой API-ключ Gemini (бесплатный): https://aistudio.google.com/app/apikey
+  LINEAR_API_KEY: '***REMOVED_LINEAR_KEY***',  // Personal API key из Linear → Settings → API
+  LINEAR_TEAM_KEY: 'QIRE',          // Ключ команды в Linear, куда будут создаваться задачи
+  LINEAR_PROJECT_NAME: 'QIRE lab'   // Название проекта в Linear, в который будут добавляться задачи (опционально)
 };
 
 // ======================== MENU ===============================
@@ -79,6 +82,7 @@ function onOpen() {
     .addItem('Удалить автозадачи на сегодня', 'clearAutoEventsToday')
     .addItem('Удалить автозадачи на завтра', 'clearAutoEventsTomorrow')
     .addSeparator()
+    .addItem('Создать задачи на команду', 'createTasksInLinear')
     .addItem('Архивировать запланированные задачи', 'archivePlannedTasks')
     .addToUi();
 }
@@ -311,6 +315,276 @@ function renumberSheet(sheet) {
   }
 }
 
+/**
+ * Creates Linear issues for every task that has an "Исполнитель" email set
+ * and is not yet marked "Запланировано". On success, the task's
+ * "Запланировано" checkbox is enabled.
+ *
+ *  - Assignee:  resolved from the email in the sheet via Linear users query.
+ *  - Estimate:  hours from "Время" rounded UP to the next whole story point.
+ *  - Labels:    one label per non-empty value of "Сфера" and "Проект"
+ *               (looked up by name, created in the team if missing).
+ *  - Priority:  A → Urgent (1), B → Medium (3), other → No priority (0).
+ */
+function createTasksInLinear() {
+  var ui = SpreadsheetApp.getUi();
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(CONFIG.SHEET_NAME);
+  if (!sheet) {
+    ui.alert('Вкладка "' + CONFIG.SHEET_NAME + '" не найдена.');
+    return;
+  }
+  if (!CONFIG.LINEAR_API_KEY) {
+    ui.alert('Не указан LINEAR_API_KEY в CONFIG.\n\n' +
+      'Получите Personal API key: Linear → Settings → API → Personal API keys.');
+    return;
+  }
+  if (!CONFIG.LINEAR_TEAM_KEY) {
+    ui.alert('Не указан LINEAR_TEAM_KEY в CONFIG.\n\n' +
+      'Это ключ команды (например, "ENG"), который виден в URL и идентификаторах задач Linear.');
+    return;
+  }
+
+  var layout = getSheetLayout(sheet);
+  if (!layout || layout.colMap.name < 0) {
+    ui.alert('Не удалось определить структуру таблицы.');
+    return;
+  }
+  if (layout.colMap.assignee < 0) {
+    ui.alert('Колонка "Исполнитель" не найдена в таблице.');
+    return;
+  }
+
+  var tasks = readTasks();
+  var candidates = tasks.filter(function(t) { return t.assignee && !t.planned; });
+
+  if (candidates.length === 0) {
+    ui.alert('Нет задач с указанным исполнителем (и без отметки «Запланировано»).');
+    return;
+  }
+
+  // Resolve the team and (optionally) the project once
+  var teamId;
+  var projectId = null;
+  try {
+    teamId = resolveLinearTeamId(CONFIG.LINEAR_TEAM_KEY);
+    if (!teamId) {
+      ui.alert('Команда с ключом "' + CONFIG.LINEAR_TEAM_KEY + '" не найдена в Linear.');
+      return;
+    }
+    if (CONFIG.LINEAR_PROJECT_NAME) {
+      projectId = resolveLinearProjectId(CONFIG.LINEAR_PROJECT_NAME, teamId);
+      if (!projectId) {
+        ui.alert('Проект "' + CONFIG.LINEAR_PROJECT_NAME + '" не найден в Linear.');
+        return;
+      }
+    }
+  } catch (e) {
+    ui.alert('Ошибка обращения к Linear: ' + e.message);
+    return;
+  }
+
+  var userIdCache = {};
+  var labelIdCache = {};
+  var createdRows = [];
+  var createdIssues = []; // [{ id: "QIRE-42", title: "..." }]
+  var failed = [];
+
+  for (var i = 0; i < candidates.length; i++) {
+    var task = candidates[i];
+    try {
+      // Resolve assignee by email (cached)
+      var assigneeId = userIdCache[task.assignee];
+      if (assigneeId === undefined) {
+        assigneeId = findLinearUserByEmail(task.assignee);
+        userIdCache[task.assignee] = assigneeId;
+      }
+      if (!assigneeId) {
+        failed.push(task.name + ' — исполнитель ' + task.assignee + ' не найден в Linear');
+        continue;
+      }
+
+      // Collect labels from Сфера + Проект (each one a separate label, cached)
+      var labelNames = [];
+      if (task.sphere) labelNames.push(task.sphere);
+      if (task.project) labelNames.push(task.project);
+
+      var labelIds = [];
+      for (var ln = 0; ln < labelNames.length; ln++) {
+        var labelName = labelNames[ln];
+        var labelId = labelIdCache[labelName];
+        if (labelId === undefined) {
+          labelId = findOrCreateLinearLabel(labelName, teamId);
+          labelIdCache[labelName] = labelId;
+        }
+        if (labelId) labelIds.push(labelId);
+      }
+
+      // Estimate: hours from sheet → ceil to whole number (min 1)
+      var hours = task.durationMin / 60;
+      var estimate = Math.max(1, Math.ceil(hours));
+
+      var description = '';
+      if (task.project) description += '**Проект:** ' + task.project + '\n';
+      if (task.sphere) description += '**Сфера:** ' + task.sphere + '\n';
+      description += '**Приоритет:** ' + task.priority + '\n';
+      description += '**Тип:** ' + getTaskTypeLabel(task.taskType);
+      if (task.comment) description += '\n**Комментарий:** ' + task.comment;
+
+      var input = {
+        teamId: teamId,
+        title: task.name,
+        description: description,
+        assigneeId: assigneeId,
+        priority: linearPriorityFromLetter(task.priority),
+        estimate: estimate
+      };
+      if (labelIds.length > 0) input.labelIds = labelIds;
+      if (projectId) input.projectId = projectId;
+
+      var identifier = createLinearIssue(input);
+      if (identifier) {
+        createdRows.push(task.rowIndex);
+        createdIssues.push({ id: identifier, title: task.name });
+      } else {
+        failed.push(task.name + ' — Linear отклонил создание');
+      }
+    } catch (e) {
+      failed.push(task.name + ' — ' + e.message);
+    }
+  }
+
+  if (createdRows.length > 0) {
+    markPlanned(createdRows, true);
+  }
+
+  var createdList = createdIssues.map(function(it) {
+    return it.id + ' — ' + it.title;
+  }).join('\n');
+
+  ui.alert(
+    'Создание задач в Linear',
+    'Создано: ' + createdRows.length + ' из ' + candidates.length +
+    (createdList ? '\n\nСозданы:\n' + createdList : '') +
+    (failed.length > 0 ? '\n\nНе удалось:\n' + failed.join('\n') : ''),
+    ui.ButtonSet.OK
+  );
+}
+
+/**
+ * Maps a priority letter from the sheet to Linear's priority integer.
+ * Linear priorities: 0=No priority, 1=Urgent, 2=High, 3=Medium, 4=Low.
+ */
+function linearPriorityFromLetter(letter) {
+  switch (String(letter).toUpperCase()) {
+    case 'A': return 1; // Urgent
+    case 'B': return 3; // Medium
+    default:  return 0; // No priority
+  }
+}
+
+/**
+ * Calls the Linear GraphQL API. Throws on HTTP or GraphQL errors.
+ */
+function callLinearAPI(query, variables) {
+  var response = UrlFetchApp.fetch('https://api.linear.app/graphql', {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { 'Authorization': CONFIG.LINEAR_API_KEY },
+    payload: JSON.stringify({ query: query, variables: variables || {} }),
+    muteHttpExceptions: true
+  });
+  var code = response.getResponseCode();
+  var text = response.getContentText();
+  if (code !== 200) {
+    throw new Error('Linear API HTTP ' + code + ': ' + text);
+  }
+  var json = JSON.parse(text);
+  if (json.errors) {
+    throw new Error('Linear API: ' + JSON.stringify(json.errors));
+  }
+  return json.data;
+}
+
+/** Resolves a Linear team key (e.g. "ENG") to its UUID team id. */
+function resolveLinearTeamId(teamKey) {
+  var data = callLinearAPI(
+    'query($key: String!) { teams(filter: { key: { eq: $key } }) { nodes { id key } } }',
+    { key: teamKey }
+  );
+  var nodes = data.teams.nodes;
+  return nodes.length > 0 ? nodes[0].id : null;
+}
+
+/**
+ * Resolves a Linear project name to its id. Prefers projects that include
+ * the given team. Returns null if not found.
+ */
+function resolveLinearProjectId(projectName, teamId) {
+  var data = callLinearAPI(
+    'query($name: String!) { projects(filter: { name: { eq: $name } }) { nodes { id name teams { nodes { id } } } } }',
+    { name: projectName }
+  );
+  var nodes = data.projects.nodes;
+  if (nodes.length === 0) return null;
+  for (var i = 0; i < nodes.length; i++) {
+    var teams = (nodes[i].teams && nodes[i].teams.nodes) || [];
+    for (var j = 0; j < teams.length; j++) {
+      if (teams[j].id === teamId) return nodes[i].id;
+    }
+  }
+  return nodes[0].id;
+}
+
+/** Looks up a Linear user id by email. Returns null if not found. */
+function findLinearUserByEmail(email) {
+  var data = callLinearAPI(
+    'query($email: String!) { users(filter: { email: { eq: $email } }) { nodes { id email } } }',
+    { email: email }
+  );
+  var nodes = data.users.nodes;
+  return nodes.length > 0 ? nodes[0].id : null;
+}
+
+/**
+ * Returns the id of a Linear label with the given name, preferring labels
+ * scoped to the given team or workspace-wide. Creates a team-scoped label
+ * if none exists.
+ */
+function findOrCreateLinearLabel(name, teamId) {
+  var data = callLinearAPI(
+    'query($name: String!) { issueLabels(filter: { name: { eq: $name } }) { nodes { id name team { id } } } }',
+    { name: name }
+  );
+  var nodes = data.issueLabels.nodes;
+  for (var i = 0; i < nodes.length; i++) {
+    if (!nodes[i].team || nodes[i].team.id === teamId) {
+      return nodes[i].id;
+    }
+  }
+  var created = callLinearAPI(
+    'mutation($input: IssueLabelCreateInput!) { issueLabelCreate(input: $input) { success issueLabel { id } } }',
+    { input: { teamId: teamId, name: name } }
+  );
+  if (created.issueLabelCreate.success) {
+    return created.issueLabelCreate.issueLabel.id;
+  }
+  return null;
+}
+
+/**
+ * Creates a Linear issue.
+ * Returns the human-readable identifier (e.g. "QIRE-42") on success, null otherwise.
+ */
+function createLinearIssue(input) {
+  var data = callLinearAPI(
+    'mutation($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { id identifier url } } }',
+    { input: input }
+  );
+  if (!data.issueCreate.success) return null;
+  return data.issueCreate.issue.identifier;
+}
+
 // ======================== MAIN LOGIC =========================
 
 /**
@@ -346,6 +620,17 @@ function planTasksForDate(targetDate, filterNumbers) {
       'Вкладка: "' + CONFIG.SHEET_NAME + '"\n\n' +
       'Диагностика:\n' + (log || 'нет данных'),
       ui.ButtonSet.OK);
+    return;
+  }
+
+  // 1.5 Skip tasks already marked "Запланировано" — no action on them.
+  var skippedPlanned = 0;
+  tasks = tasks.filter(function(task) {
+    if (task.planned) { skippedPlanned++; return false; }
+    return true;
+  });
+  if (tasks.length === 0) {
+    ui.alert('Все задачи отмечены как «Запланировано». Снимите галочку, чтобы запланировать заново.');
     return;
   }
 
@@ -464,6 +749,7 @@ function planTasksForDate(targetDate, filterNumbers) {
     'Запланировано задач: ' + totalScheduled + ' из ' + tasks.length + '\n' +
     (pinnedResult.scheduled > 0 ? 'Из них привязано ко времени (из комментария): ' + pinnedResult.scheduled + '\n' : '') +
     (skipped > 0 ? 'Пропущено (уже в календаре на другие дни): ' + skipped + '\n' : '') +
+    (skippedPlanned > 0 ? 'Пропущено (отмечено «Запланировано»): ' + skippedPlanned + '\n' : '') +
     (notFoundNumbers.length > 0 ? 'Не найдены номера: ' + notFoundNumbers.join(', ') + '\n' : '') +
     (totalUnscheduled > 0
       ? 'Не хватило времени для ' + totalUnscheduled + ' задач(и).'
@@ -524,6 +810,8 @@ function readTasks() {
     var project = colMap.project >= 0 ? String(row[colMap.project]).trim() : '';
     var sphere = colMap.sphere >= 0 ? String(row[colMap.sphere]).trim() : '';
     var comment = colMap.comment >= 0 ? String(row[colMap.comment]).trim() : '';
+    var assignee = colMap.assignee >= 0 ? String(row[colMap.assignee]).trim() : '';
+    var planned = colMap.planned >= 0 ? row[colMap.planned] === true : false;
 
     // Determine duration in minutes
     var durationMin;
@@ -547,7 +835,9 @@ function readTasks() {
       durationMin: durationMin,
       project: project,
       sphere: sphere,
-      comment: comment
+      comment: comment,
+      assignee: assignee,
+      planned: planned
     });
   }
 
@@ -1257,7 +1547,8 @@ function getSheetLayout(sheet) {
       project: findCol(headerNames, ['проект', 'project']),
       sphere: findCol(headerNames, ['сфера', 'sphere', 'область']),
       planned: findCol(headerNames, ['запланировано', 'planned']),
-      comment: findCol(headerNames, ['комментарий', 'комментарии', 'comment', 'comments', 'примечание'])
+      comment: findCol(headerNames, ['комментарий', 'комментарии', 'comment', 'comments', 'примечание']),
+      assignee: findCol(headerNames, ['исполнитель', 'assignee', 'ответственный'])
     }
   };
 }
@@ -1269,7 +1560,8 @@ function getSheetLayout(sheet) {
 function findHeaderRow(data) {
   var keywords = ['наименование', 'название', 'приоритет', 'характер',
                   'время', 'проект', 'сфера', 'номер', '№', 'запланировано',
-                  'name', 'priority', 'project', 'number', 'комментар'];
+                  'name', 'priority', 'project', 'number', 'комментар',
+                  'исполнитель', 'assignee', 'ответственный'];
 
   // Search ALL rows — sorting could have moved the header anywhere
   for (var r = 0; r < data.length; r++) {
