@@ -124,7 +124,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// === COMMAND HANDLER v2.3 ===\n// /vpsk       → routeTo: 'wf06-stmt'  (запрашиваем выписку)\n// /reconcile  → routeTo: 'wf07'       (сверка BY + PL)\n// /missing    → routeTo: 'wf07-misc'  (незакрытые позиции)\n// /report     → routeTo: 'wf07-misc'  (последний отчёт)\n// остальные   → routeTo: 'local'      (текстовый ответ прямо здесь)\n\nconst chatId = $input.first().json.chatId;\nconst text   = $input.first().json.text || '';\nconst parts  = text.trim().split(/\\s+/);\nconst cmd    = parts[0].toLowerCase().replace(/@\\w+/, '');\nconst args   = parts.slice(1);\n\n// /vpsk\nif (cmd === '/vpsk') {\n  return [{ json: {\n    chatId,\n    routeTo: 'wf06-stmt',\n    reply: '\\uD83D\\uDCCE Пришлите выписку банка (PDF или DOCX).\\n\\n'         + 'Поддерживаются:\\n'         + '\\uD83C\\uDDE7\\uD83C\\uDDFE Приорбанк BY (.docx)\\n'         + '\\uD83C\\uDDF5\\uD83C\\uDDF1 PKO Bank Polski PL (.pdf)\\n\\n'         + 'Сессия действует 10 минут.'\n  }}];\n}\n\n// /reconcile → WF-07\nif (cmd === '/reconcile') {\n  let period = '';\n  const p = args[0] || '';\n  if (/^\\d{4}-\\d{2}$/.test(p)) period = p;\n  return [{ json: { chatId, routeTo: 'wf07', period, mode: 'reconcile', reply: '' } }];\n}\n\n// /missing → WF-07\nif (cmd === '/missing') {\n  return [{ json: { chatId, routeTo: 'wf07-misc', mode: 'missing', reply: '' } }];\n}\n\n// /report → WF-07\nif (cmd === '/report') {\n  return [{ json: { chatId, routeTo: 'wf07-misc', mode: 'report', reply: '' } }];\n}\n\n// Локальные ответы\nconst replies = {\n  '/start':  '\\uD83D\\uDC4B Привет!\\n\\nОтправьте PDF, фото документа, голосовое или текст о платеже — я запишу в реестр.\\n\\n/help — справка',\n  '/help':   '\\uD83D\\uDCD6 Команды:\\n/status — последние записи\\n/settings — настройки\\n/vpsk — загрузить выписку банка\\n/reconcile [YYYY-MM] — сверка (BY + PL)\\n/missing — незакрытые позиции\\n/report — последний отчёт\\n/cancel — отмена',\n  '/cancel': '\\u2705 Отменено.',\n  '/status': '\\uD83D\\uDCCB Последние записи — в листе Реестр.'\n};\n\nlet reply = replies[cmd];\n\nif (!reply && cmd === '/settings') {\n  const sub = args.join(' ');\n  if (!sub)                           reply = '\\u2699\\uFE0F Настройки:\\n/settings recipients list\\n/settings recipients add @user\\n/settings recipients remove @user\\n/settings schedule show';\n  else if (sub === 'recipients list') reply = '\\uD83D\\uDCCB Получатели: откройте лист «Получатели» в Google Sheets.';\n  else if (sub.startsWith('recipients add'))    reply = '\\u2705 Добавьте строку в лист «Получатели»: chat_id | username | owner/accountant | TRUE';\n  else if (sub.startsWith('recipients remove')) reply = '\\u2705 Поставьте active=FALSE в листе «Получатели».';\n  else if (sub === 'schedule show')   reply = '\\uD83D\\uDD50 Сверка: 1-е число, 09:00 UTC+3 (Europe/Minsk)';\n  else                                reply = `\\u2753 Неизвестная подкоманда: ${sub}`;\n}\n\nif (!reply) reply = `\\u2753 Неизвестная команда: ${cmd}`;\n\nreturn [{ json: { chatId, routeTo: 'local', reply } }];\n"
+        "jsCode": "// === COMMAND HANDLER v2.3 ===\n// /vpsk       → routeTo: 'wf06-stmt'  (запрашиваем выписку)\n// /reconcile  → routeTo: 'wf07'       (сверка BY + PL)\n// /missing    → routeTo: 'wf07-misc'  (незакрытые позиции)\n// /report     → routeTo: 'wf07-misc'  (последний отчёт)\n// остальные   → routeTo: 'local'      (текстовый ответ прямо здесь)\n\nconst chatId = $input.first().json.chatId;\nconst text   = $input.first().json.text || '';\nconst parts  = text.trim().split(/\\s+/);\nconst cmd    = parts[0].toLowerCase().replace(/@\\w+/, '');\nconst args   = parts.slice(1);\n\n// /vpsk\nif (cmd === '/vpsk') {\n  return [{ json: {\n    chatId,\n    routeTo: 'wf06-stmt',\n    reply: '\\uD83D\\uDCCE Пришлите выписку банка (PDF или DOCX).\\n\\n'         + 'Поддерживаются:\\n'         + '\\uD83C\\uDDE7\\uD83C\\uDDFE Приорбанк BY (.docx)\\n'         + '\\uD83C\\uDDF5\\uD83C\\uDDF1 PKO Bank Polski PL (.pdf)\\n\\n'         + 'Сессия действует 10 минут.'\n  }}];\n}\n\n// /reconcile → WF-07\nif (cmd === '/reconcile') {\n  let period = '';\n  const p = args[0] || '';\n  if (/^\\d{4}-\\d{2}$/.test(p)) period = p;\n  return [{ json: { chatId, routeTo: 'wf07', period, mode: 'reconcile', reply: '' } }];\n}\n\n// /missing → WF-07\nif (cmd === '/missing') {\n  return [{ json: { chatId, routeTo: 'wf07-misc', mode: 'missing', reply: '' } }];\n}\n\n// /report → WF-07\nif (cmd === '/report') {\n  return [{ json: { chatId, routeTo: 'wf07-misc', mode: 'report', reply: '' } }];\n}\n\n// /update → WF-08 (объединение Реестр + Банк в общий документ)\nif (cmd === '/update') {\n  return [{ json: { chatId, routeTo: 'wf08', reply: '' } }];\n}\n\n// Локальные ответы\nconst replies = {\n  '/start':  '\\uD83D\\uDC4B Привет!\\n\\nОтправьте PDF, фото документа, голосовое или текст о платеже — я запишу в реестр.\\n\\n/help — справка',\n  '/help':   '\\uD83D\\uDCD6 Команды:\\n/status — последние записи\\n/settings — настройки\\n/vpsk — загрузить выписку банка\\n/reconcile [YYYY-MM] — сверка (BY + PL)\\n/missing — незакрытые позиции\\n/report — последний отчёт\\n/update — обновить объединённый Реестр (Реестр + Банк)\\n/cancel — отмена',\n  '/cancel': '\\u2705 Отменено.',\n  '/status': '\\uD83D\\uDCCB Последние записи — в листе Реестр.'\n};\n\nlet reply = replies[cmd];\n\nif (!reply && cmd === '/settings') {\n  const sub = args.join(' ');\n  if (!sub)                           reply = '\\u2699\\uFE0F Настройки:\\n/settings recipients list\\n/settings recipients add @user\\n/settings recipients remove @user\\n/settings schedule show';\n  else if (sub === 'recipients list') reply = '\\uD83D\\uDCCB Получатели: откройте лист «Получатели» в Google Sheets.';\n  else if (sub.startsWith('recipients add'))    reply = '\\u2705 Добавьте строку в лист «Получатели»: chat_id | username | owner/accountant | TRUE';\n  else if (sub.startsWith('recipients remove')) reply = '\\u2705 Поставьте active=FALSE в листе «Получатели».';\n  else if (sub === 'schedule show')   reply = '\\uD83D\\uDD50 Сверка: 1-е число, 09:00 UTC+3 (Europe/Minsk)';\n  else                                reply = `\\u2753 Неизвестная подкоманда: ${sub}`;\n}\n\nif (!reply) reply = `\\u2753 Неизвестная команда: ${cmd}`;\n\nreturn [{ json: { chatId, routeTo: 'local', reply } }];\n"
       },
       "id": "e30a48e7-ddc8-45f3-aff4-f8c152c25a90",
       "name": "Command Handler",
@@ -138,7 +138,8 @@
     {
       "parameters": {
         "mode": "expression",
-        "output": "={{ $json.routeTo === 'wf07' ? 0 : ($json.routeTo === 'wf07-misc') ? 1 : $json.routeTo === 'wf06-stmt' ? 2 : 3 }}"
+        "numberOutputs": 5,
+        "output": "={{ $json.routeTo === 'wf07' ? 0 : $json.routeTo === 'wf07-misc' ? 1 : $json.routeTo === 'wf06-stmt' ? 2 : $json.routeTo === 'wf08' ? 4 : 3 }}"
       },
       "id": "6ffc4d5d-a6bf-4d16-a1f5-bb54dab49d64",
       "name": "Command Route Switch",
@@ -181,6 +182,40 @@
       "position": [
         -3344,
         2048
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://n8ninvoice.qirelab.com/webhook/wf08-update",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chatId: $json.chatId }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 120000
+        }
+      },
+      "id": "d4f8a701-9c12-4abe-b550-f15b7c39a008",
+      "name": "Call WF08",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -3344,
+        2192
       ]
     },
     {
@@ -703,6 +738,13 @@
         [
           {
             "node": "Send Command Reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Call WF08",
             "type": "main",
             "index": 0
           }

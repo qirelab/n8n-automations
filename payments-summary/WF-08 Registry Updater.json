@@ -1,0 +1,415 @@
+{
+  "name": "WF-08 Registry Updater",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## WF-08: Registry Updater (Слой 3, /update)\n\n**Назначение.** По команде /update в Telegram читает Реестр + Банк из основного документа (GOOGLE_SHEETS_ID = 1V-T109wWf...), объединяет их в строки по правилу:\n   • Реестр+Банк с одинаковым UUID/Номером инвойса → одна объединённая строка\n   • Реестр без банковской операции → строка без оплаты\n   • Банк без документа в Реестре → строка без инвойса\nи перезаписывает целевой документ Реестр (захардкожен 1srpRh2T...).\n\n**Smart upsert:** перед записью читает текущий целевой Реестр; для строк с совпадающим ID сохраняет ручные правки в колонках Тип документа, Товар или услуга, Ед измерения, Количество, Стоимость, НДС, В бухгалтерию.\n\n**Контракт входа от WF-01 (POST /webhook/wf08-update):**\n```\n{ chatId }\n```\n\n**Контракт выхода (HTTP-ответ для WF-01):**\n```\n{ ok: true|false, chatId, mode: 'update' }\n```\n\n**Доступ:** любой из TELEGRAM_ADMIN_CHAT_ID (whitelist в WF-01).\n\n**Env-переменные:**\n- GOOGLE_SHEETS_ID (источник: Реестр + Банк)\n- TELEGRAM_BOT_TOKEN\n\n**Целевой документ:** ID 1srpRh2TgHZY8W-wkmgSTlV4vhxplT_PBhNz-Cd3w-U8, вкладка 'Реестр', 21 колонка.",
+        "height": 460,
+        "width": 540
+      },
+      "id": "00000000-0000-0000-0000-000000000001",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-400, -200]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "wf08-update",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "11111111-1111-1111-1111-111111111111",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-400, 400],
+      "webhookId": "wf08-update"
+    },
+    {
+      "parameters": {
+        "jsCode": "// === WF-08 [0] Parse Input ===\n// Извлекаем chatId из тела POST-запроса от WF-01.\nconst raw = $input.first().json;\nconst body = raw.body || raw;\nconst chatId = String(body.chatId || '');\nif (!chatId) {\n  throw new Error('WF-08: chatId is required');\n}\nreturn [{ json: { chatId } }];"
+      },
+      "id": "22222222-2222-2222-2222-222222222222",
+      "name": "Parse Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-180, 400]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Реестр",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "33333333-3333-3333-3333-333333333333",
+      "name": "Read Source Реестр",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [40, 400],
+      "alwaysOutputData": true,
+      "executeOnce": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "rnvzuybEF91V5uQQ",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pass-through: сжимаем N строк Реестра обратно в 1 элемент, чтобы downstream-ноды не размножались.\n// Сами данные доступны через $('Read Source Реестр').all().\nreturn [$('Parse Input').first()];"
+      },
+      "id": "44444444-4444-4444-4444-444444444444",
+      "name": "Collapse 1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [260, 400]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Банк",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "55555555-5555-5555-5555-555555555555",
+      "name": "Read Source Банк",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [480, 400],
+      "alwaysOutputData": true,
+      "executeOnce": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "rnvzuybEF91V5uQQ",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return [$('Parse Input').first()];"
+      },
+      "id": "66666666-6666-6666-6666-666666666666",
+      "name": "Collapse 2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 400]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1srpRh2TgHZY8W-wkmgSTlV4vhxplT_PBhNz-Cd3w-U8",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Реестр",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "77777777-7777-7777-7777-777777777777",
+      "name": "Read Target Реестр",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [920, 400],
+      "alwaysOutputData": true,
+      "executeOnce": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "rnvzuybEF91V5uQQ",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// === WF-08 [1] Build Merged Dataset ===\n// Объединяет Реестр + Банк в строки целевой схемы (21 колонка).\n// Алгоритм:\n//   1) Матчим Банк → Реестр по UUID реестра (если заполнен), иначе по Номеру инвойса (банк) + Страна.\n//   2) Для matched строим объединённую строку (документ из Реестра + платёж из Банка).\n//   3) Реестр без банковского matched → reg-only (поля Дата/Сумма оплаты пусты).\n//   4) Банк без Реестрового matched → bank-only (поля Тип документа, Сумма брутто пусты).\n//   5) Сортируем по дате (документа, fallback оплаты).\n//   6) Нумеруем Nr = 1..N.\n//   7) Smart upsert: для совпадающих ID копируем ручные правки из текущего target.\n\nconst sourceReg  = $('Read Source Реестр').all().map(i => i.json);\nconst sourceBank = $('Read Source Банк').all().map(i => i.json);\nconst oldTarget  = $('Read Target Реестр').all().map(i => i.json);\n\nconst MANUAL_COLS = ['Тип документа', 'Товар или услуга', 'Ед измерения', 'Количество', 'Стоимость', 'НДС', 'В бухгалтерию'];\n\nfunction normAmount(v) {\n  if (v === '' || v === null || v === undefined) return '';\n  const s = String(v).replace(/\\s/g, '').replace(',', '.').replace(/^-/, '-');\n  const n = parseFloat(s);\n  return Number.isFinite(n) ? n : '';\n}\n\nfunction parseDate(s) {\n  if (!s) return 0;\n  const m = String(s).match(/^(\\d{2})\\.(\\d{2})\\.(\\d{4})$/);\n  if (m) return new Date(parseInt(m[3], 10), parseInt(m[2], 10) - 1, parseInt(m[1], 10)).getTime();\n  const d = Date.parse(s);\n  return Number.isFinite(d) ? d : 0;\n}\n\n// Индексы по Реестру\nconst regByUuid = new Map();\nconst regByInvoiceCountry = new Map();\nfor (const r of sourceReg) {\n  const uuid = String(r['UUID'] || '').trim();\n  const inv  = String(r['Номер инвойса'] || '').trim();\n  const country = String(r['Страна'] || '').trim();\n  if (uuid) regByUuid.set(uuid, r);\n  if (inv && country) regByInvoiceCountry.set(country + '|' + inv, r);\n}\n\nconst matchedRegUuids = new Set();\nconst merged = [];\n\n// Проход 1: банковские строки\nfor (const b of sourceBank) {\n  const bUuid = String(b['UUID реестра'] || '').trim();\n  const bInv  = String(b['Номер инвойса (банк)'] || '').trim();\n  const bCountry = String(b['Страна'] || '').trim();\n\n  let r = null;\n  if (bUuid && regByUuid.has(bUuid)) r = regByUuid.get(bUuid);\n  else if (bInv && bCountry && regByInvoiceCountry.has(bCountry + '|' + bInv)) r = regByInvoiceCountry.get(bCountry + '|' + bInv);\n\n  if (r) {\n    matchedRegUuids.add(String(r['UUID'] || ''));\n    merged.push({\n      _type: 'matched',\n      _sortDate: parseDate(r['Дата документа'] || b['Дата документа'] || b['Дата оплаты']),\n      'Nr': 0,\n      'ID': r['Nr ID'] || '',\n      'Статус': r['Статус'] || b['Статус'] || '',\n      'Дата документа': r['Дата документа'] || '',\n      'Тип документа': '',\n      'Номер документа': r['Номер инвойса'] || b['Номер инвойса (банк)'] || '',\n      'Контрагент': r['Контрагент'] || b['Контрагент'] || '',\n      'Товар или услуга': '',\n      'Ед измерения': '',\n      'Количество': '',\n      'Стоимость': '',\n      'НДС': '',\n      'Сумма брутто': normAmount(r['Сумма']),\n      'Дата оплаты': b['Дата оплаты'] || r['Дата оплаты'] || '',\n      'Сумма оплаты': normAmount(b['Сумма']),\n      'Счет / Источник': b['Банк'] || '',\n      'В бухгалтерию': '',\n      'Статус оплаты': r['Статус оплаты'] || 'Оплачено',\n      'Страна': r['Страна'] || b['Страна'] || '',\n      'Ссылка на документ': r['Ссылка на документ'] || '',\n      'Описание ИИ': r['Описание AI'] || b['Описание'] || ''\n    });\n  } else {\n    merged.push({\n      _type: 'bankOnly',\n      _sortDate: parseDate(b['Дата документа'] || b['Дата оплаты']),\n      'Nr': 0,\n      'ID': b['bank_id'] || '',\n      'Статус': b['Статус'] || '',\n      'Дата документа': b['Дата документа'] || '',\n      'Тип документа': '',\n      'Номер документа': b['Номер инвойса (банк)'] || '',\n      'Контрагент': b['Контрагент'] || '',\n      'Товар или услуга': '',\n      'Ед измерения': '',\n      'Количество': '',\n      'Стоимость': '',\n      'НДС': '',\n      'Сумма брутто': '',\n      'Дата оплаты': b['Дата оплаты'] || '',\n      'Сумма оплаты': normAmount(b['Сумма']),\n      'Счет / Источник': b['Банк'] || '',\n      'В бухгалтерию': '',\n      'Статус оплаты': 'Оплачено',\n      'Страна': b['Страна'] || '',\n      'Ссылка на документ': '',\n      'Описание ИИ': b['Описание'] || ''\n    });\n  }\n}\n\n// Проход 2: Реестр-only (не покрытые банком)\nfor (const r of sourceReg) {\n  const uuid = String(r['UUID'] || '').trim();\n  if (uuid && matchedRegUuids.has(uuid)) continue;\n  merged.push({\n    _type: 'regOnly',\n    _sortDate: parseDate(r['Дата документа'] || r['Дата оплаты']),\n    'Nr': 0,\n    'ID': r['Nr ID'] || '',\n    'Статус': r['Статус'] || '',\n    'Дата документа': r['Дата документа'] || '',\n    'Тип документа': '',\n    'Номер документа': r['Номер инвойса'] || '',\n    'Контрагент': r['Контрагент'] || '',\n    'Товар или услуга': '',\n    'Ед измерения': '',\n    'Количество': '',\n    'Стоимость': '',\n    'НДС': '',\n    'Сумма брутто': normAmount(r['Сумма']),\n    'Дата оплаты': r['Дата оплаты'] || '',\n    'Сумма оплаты': '',\n    'Счет / Источник': '',\n    'В бухгалтерию': '',\n    'Статус оплаты': r['Статус оплаты'] || '',\n    'Страна': r['Страна'] || '',\n    'Ссылка на документ': r['Ссылка на документ'] || '',\n    'Описание ИИ': r['Описание AI'] || ''\n  });\n}\n\n// Сортировка по дате\nmerged.sort((a, b) => a._sortDate - b._sortDate);\n\n// Smart upsert: индекс старого target по ID, копируем ручные правки\nconst oldByID = new Map();\nfor (const o of oldTarget) {\n  const id = String(o['ID'] || '').trim();\n  if (id) oldByID.set(id, o);\n}\n\nconst stats = { matched: 0, regOnly: 0, bankOnly: 0, preserved: 0, total: merged.length };\nconst output = [];\nfor (let i = 0; i < merged.length; i++) {\n  const row = merged[i];\n  row['Nr'] = i + 1;\n  const id = String(row['ID'] || '').trim();\n  if (id && oldByID.has(id)) {\n    const old = oldByID.get(id);\n    for (const col of MANUAL_COLS) {\n      const oldVal = old[col];\n      if (oldVal !== undefined && oldVal !== '' && oldVal !== null) {\n        if (!row[col]) {\n          row[col] = oldVal;\n          stats.preserved++;\n        }\n      }\n    }\n  }\n  if (row._type === 'matched') stats.matched++;\n  else if (row._type === 'regOnly') stats.regOnly++;\n  else stats.bankOnly++;\n  delete row._type;\n  delete row._sortDate;\n  output.push({ json: row });\n}\n\n// Прикрепляем stats к первому элементу + добавляем chatId, чтобы downstream-ноды могли его взять\nconst chatId = $('Parse Input').first().json.chatId;\nif (output.length > 0) {\n  output[0].json._stats = stats;\n  output[0].json._chatId = chatId;\n} else {\n  // Пустой набор: всё равно эмитируем заглушку, чтобы downstream работал\n  output.push({ json: { _empty: true, _chatId: chatId, _stats: stats, 'Nr': '', 'ID': '', 'Статус': '', 'Дата документа': '', 'Тип документа': '', 'Номер документа': '', 'Контрагент': '', 'Товар или услуга': '', 'Ед измерения': '', 'Количество': '', 'Стоимость': '', 'НДС': '', 'Сумма брутто': '', 'Дата оплаты': '', 'Сумма оплаты': '', 'Счет / Источник': '', 'В бухгалтерию': '', 'Статус оплаты': '', 'Страна': '', 'Ссылка на документ': '', 'Описание ИИ': '' } });\n}\n\nreturn output;"
+      },
+      "id": "88888888-8888-8888-8888-888888888888",
+      "name": "Build Merged Dataset",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1140, 400]
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "clear",
+        "documentId": {
+          "__rl": true,
+          "value": "1srpRh2TgHZY8W-wkmgSTlV4vhxplT_PBhNz-Cd3w-U8",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Реестр",
+          "mode": "name"
+        },
+        "clear": "specificRows",
+        "startIndex": 2,
+        "rowsToDelete": 999
+      },
+      "id": "99999999-9999-9999-9999-999999999999",
+      "name": "Clear Target Data",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1360, 400],
+      "executeOnce": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "rnvzuybEF91V5uQQ",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1srpRh2TgHZY8W-wkmgSTlV4vhxplT_PBhNz-Cd3w-U8",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Реестр",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Nr": "={{ $json['Nr'] }}",
+            "ID": "={{ $json['ID'] }}",
+            "Статус": "={{ $json['Статус'] }}",
+            "Дата документа": "={{ $json['Дата документа'] }}",
+            "Тип документа": "={{ $json['Тип документа'] }}",
+            "Номер документа": "={{ $json['Номер документа'] }}",
+            "Контрагент": "={{ $json['Контрагент'] }}",
+            "Товар или услуга": "={{ $json['Товар или услуга'] }}",
+            "Ед измерения": "={{ $json['Ед измерения'] }}",
+            "Количество": "={{ $json['Количество'] }}",
+            "Стоимость": "={{ $json['Стоимость'] }}",
+            "НДС": "={{ $json['НДС'] }}",
+            "Сумма брутто": "={{ $json['Сумма брутто'] }}",
+            "Дата оплаты": "={{ $json['Дата оплаты'] }}",
+            "Сумма оплаты": "={{ $json['Сумма оплаты'] }}",
+            "Счет / Источник": "={{ $json['Счет / Источник'] }}",
+            "В бухгалтерию": "={{ $json['В бухгалтерию'] }}",
+            "Статус оплаты": "={{ $json['Статус оплаты'] }}",
+            "Страна": "={{ $json['Страна'] }}",
+            "Ссылка на документ": "={{ $json['Ссылка на документ'] }}",
+            "Описание ИИ": "={{ $json['Описание ИИ'] }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "Nr", "displayName": "Nr", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
+            { "id": "ID", "displayName": "ID", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
+            { "id": "Статус", "displayName": "Статус", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
+            { "id": "Дата документа", "displayName": "Дата документа", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
+            { "id": "Тип документа", "displayName": "Тип документа", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
+            { "id": "Номер документа", "displayName": "Номер документа", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
+            { "id": "Контрагент", "displayName": "Контрагент", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
+            { "id": "Товар или услуга", "displayName": "Товар или услуга", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
+            { "id": "Ед измерения", "displayName": "Ед измерения", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
+            { "id": "Количество", "displayName": "Количество", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
+            { "id": "Стоимость", "displayName": "Стоимость", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
+            { "id": "НДС", "displayName": "НДС", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
+            { "id": "Сумма брутто", "displayName": "Сумма брутто", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
+            { "id": "Дата оплаты", "displayName": "Дата оплаты", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
+            { "id": "Сумма оплаты", "displayName": "Сумма оплаты", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
+            { "id": "Счет / Источник", "displayName": "Счет / Источник", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
+            { "id": "В бухгалтерию", "displayName": "В бухгалтерию", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
+            { "id": "Статус оплаты", "displayName": "Статус оплаты", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
+            { "id": "Страна", "displayName": "Страна", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
+            { "id": "Ссылка на документ", "displayName": "Ссылка на документ", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
+            { "id": "Описание ИИ", "displayName": "Описание ИИ", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "name": "Append Rows to Target",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1580, 400],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "rnvzuybEF91V5uQQ",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// === WF-08 [9] Build Confirmation ===\n// Берём stats из первого item Build Merged Dataset и формируем Telegram-сообщение.\n\nconst built = $('Build Merged Dataset').first().json;\nconst stats = built._stats || { matched: 0, regOnly: 0, bankOnly: 0, preserved: 0, total: 0 };\nconst chatId = built._chatId || $('Parse Input').first().json.chatId;\n\nconst targetUrl = 'https://docs.google.com/spreadsheets/d/1srpRh2TgHZY8W-wkmgSTlV4vhxplT_PBhNz-Cd3w-U8/edit';\n\nlet text;\nif (stats.total === 0) {\n  text = '\\u26A0\\uFE0F В исходных Реестре и Банке нет данных. Целевой документ очищен.';\n} else {\n  text =\n    '\\u2705 Реестр обновлён\\n\\n' +\n    '\\uD83D\\uDCCA Всего строк: ' + stats.total + '\\n' +\n    '\\uD83D\\uDD17 С документом и оплатой: ' + stats.matched + '\\n' +\n    '\\uD83D\\uDCC4 Только документ (без оплаты): ' + stats.regOnly + '\\n' +\n    '\\uD83D\\uDCB3 Только оплата (без документа): ' + stats.bankOnly + '\\n';\n  if (stats.preserved > 0) {\n    text += '\\u270F\\uFE0F Сохранено ручных правок: ' + stats.preserved + '\\n';\n  }\n  text += '\\n\\uD83D\\uDCCB ' + targetUrl;\n}\n\nreturn [{ json: { chatId, text, _stats: stats } }];"
+      },
+      "id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      "name": "Build Confirmation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1800, 400],
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {}
+      },
+      "id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+      "name": "Send Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [2020, 400],
+      "webhookId": "wf08-send",
+      "credentials": {
+        "telegramApi": {
+          "id": "j5C9rNWpZCK0yhWr",
+          "name": "MINE TG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: true, chatId: $json.chatId, mode: 'update' }) }}",
+        "options": {}
+      },
+      "id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+      "name": "Respond to WF-01",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2240, 400]
+    },
+    {
+      "parameters": {},
+      "id": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [-400, 660]
+    },
+    {
+      "parameters": {
+        "jsCode": "// === WF-08 [E] Build Error ===\nlet chatId = '';\ntry { chatId = String($('Parse Input').first().json.chatId || ''); } catch (e) {}\nif (!chatId) {\n  try { chatId = String($input.first().json.execution?.customData?.chatId || ''); } catch (e) {}\n}\nconst stepName = $input.first().json.node?.name || $input.first().json.execution?.error?.node?.name || 'неизвестный';\nconst errMsg = $input.first().json.execution?.error?.message || $input.first().json.error?.message || 'неизвестная ошибка';\nreturn [{ json: { chatId, text: '\\u274C WF-08 /update упал.\\n\\n*Шаг:* ' + stepName + '\\n*Ошибка:* ' + errMsg } }];"
+      },
+      "id": "ffffffff-ffff-ffff-ffff-ffffffffffff",
+      "name": "Build Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-180, 660]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "10101010-1010-1010-1010-101010101010",
+      "name": "Send Error",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [40, 660],
+      "webhookId": "wf08-send-err",
+      "credentials": {
+        "telegramApi": {
+          "id": "j5C9rNWpZCK0yhWr",
+          "name": "MINE TG"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [[{ "node": "Parse Input", "type": "main", "index": 0 }]]
+    },
+    "Parse Input": {
+      "main": [[{ "node": "Read Source Реестр", "type": "main", "index": 0 }]]
+    },
+    "Read Source Реестр": {
+      "main": [[{ "node": "Collapse 1", "type": "main", "index": 0 }]]
+    },
+    "Collapse 1": {
+      "main": [[{ "node": "Read Source Банк", "type": "main", "index": 0 }]]
+    },
+    "Read Source Банк": {
+      "main": [[{ "node": "Collapse 2", "type": "main", "index": 0 }]]
+    },
+    "Collapse 2": {
+      "main": [[{ "node": "Read Target Реестр", "type": "main", "index": 0 }]]
+    },
+    "Read Target Реестр": {
+      "main": [[{ "node": "Build Merged Dataset", "type": "main", "index": 0 }]]
+    },
+    "Build Merged Dataset": {
+      "main": [[{ "node": "Clear Target Data", "type": "main", "index": 0 }]]
+    },
+    "Clear Target Data": {
+      "main": [[{ "node": "Append Rows to Target", "type": "main", "index": 0 }]]
+    },
+    "Append Rows to Target": {
+      "main": [[{ "node": "Build Confirmation", "type": "main", "index": 0 }]]
+    },
+    "Build Confirmation": {
+      "main": [[{ "node": "Send Telegram", "type": "main", "index": 0 }]]
+    },
+    "Send Telegram": {
+      "main": [[{ "node": "Respond to WF-01", "type": "main", "index": 0 }]]
+    },
+    "Error Trigger": {
+      "main": [[{ "node": "Build Error", "type": "main", "index": 0 }]]
+    },
+    "Build Error": {
+      "main": [[{ "node": "Send Error", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "default"
+  },
+  "versionId": "wf08-v1-init",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "id": "WF08RegistryUpdater",
+  "tags": []
+}
