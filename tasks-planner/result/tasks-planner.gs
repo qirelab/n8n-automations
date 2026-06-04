@@ -63,8 +63,10 @@ var CONFIG = {
   SHORT_TASK_MIN: 6,
   EVENT_COLOR: CalendarApp.EventColor.CYAN,
   EVENT_PREFIX: '[Auto] ',
-  GEMINI_API_KEY: '***REMOVED_GEMINI_KEY***',  // Вставьте свой API-ключ Gemini (бесплатный): https://aistudio.google.com/app/apikey
-  LINEAR_API_KEY: '***REMOVED_LINEAR_KEY***',  // Personal API key из Linear → Settings → API
+  // Секреты берутся из Script Properties (Project Settings → Script Properties),
+  // чтобы НЕ хранить их в коде/репозитории (иначе ключи утекают и автоматически отзываются).
+  GEMINI_API_KEY: PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY') || '',  // ключ Gemini: https://aistudio.google.com/app/apikey
+  LINEAR_API_KEY: PropertiesService.getScriptProperties().getProperty('LINEAR_API_KEY') || '',  // Personal API key: Linear → Settings → API
   LINEAR_TEAM_KEY: 'QIRE',          // Ключ команды в Linear, куда будут создаваться задачи
   LINEAR_PROJECT_NAME: 'QIRE lab'   // Название проекта в Linear, в который будут добавляться задачи (опционально)
 };
