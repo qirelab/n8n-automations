@@ -1,0 +1,384 @@
+{
+  "name": "WF-01 Diary Capture (Voice to Drive + Doc)",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
+      "id": "telegram-trigger-voice",
+      "name": "Telegram Trigger (Voice)",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        8880,
+        3456
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_TELEGRAM_DIARY",
+          "name": "Telegram Diary Bot"
+        }
+      },
+      "webhookId": "diary-capture"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "voice-check",
+              "leftValue": "={{ ($json.message.voice || $json.message.audio) ? true : false }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "is-voice-message",
+      "name": "Is Voice Message?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        9104,
+        3456
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Telegram Trigger (Voice)').item.json.message.chat.id }}",
+        "text": "Пожалуйста, отправьте голосовое сообщение (или аудиофайл) с записью дня.",
+        "additionalFields": {}
+      },
+      "id": "telegram-reject-non-voice",
+      "name": "Telegram Reject Non-Voice",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        9344,
+        3600
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_TELEGRAM_DIARY",
+          "name": "Telegram Diary Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "fileId": "={{ $json.message.voice ? $json.message.voice.file_id : $json.message.audio.file_id }}",
+        "additionalFields": {}
+      },
+      "id": "telegram-download-voice",
+      "name": "Telegram Download Voice",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        9344,
+        3328
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_TELEGRAM_DIARY",
+          "name": "Telegram Diary Bot"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "resource": "audio",
+        "operation": "transcribe",
+        "options": {
+          "language": "ru"
+        }
+      },
+      "id": "openai-transcribe-whisper",
+      "name": "OpenAI Transcribe (Whisper)",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.6,
+      "position": [
+        9584,
+        3328
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_OPENAI",
+          "name": "OpenAI"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "gpt-4o-mini"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "Ты — ассистент, который ведёт деловой дневник собственника компании. Получив расшифровку голосовой записи за день (итоги дня, инсайты, проблемы), верни СТРОГО валидный JSON без markdown, без пояснений, ровно с такими полями:\n{\n  \"Заголовок\": \"\",\n  \"Итоги\": [],\n  \"Инсайты\": [],\n  \"Проблемы\": [],\n  \"Следующие шаги\": []\n}\n\nПравила:\n- Заголовок: одна короткая строка (до 80 символов), суть дня.\n- Итоги / Инсайты / Проблемы / Следующие шаги: массивы коротких пунктов на русском.\n- Если по какому-то полю в записи ничего нет — верни пустой массив [].\n- Не выдумывай факты, которых нет в записи. Пиши по-русски, по-деловому, кратко.",
+              "role": "system"
+            },
+            {
+              "content": "={{ $('OpenAI Transcribe (Whisper)').item.json.text }}"
+            }
+          ]
+        },
+        "jsonOutput": true,
+        "options": {
+          "temperature": 0.2
+        }
+      },
+      "id": "openai-summarize-day",
+      "name": "OpenAI Summarize Day",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.6,
+      "position": [
+        9824,
+        3328
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_OPENAI",
+          "name": "OpenAI"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Собираем payload для Apps Script Web App.\n// 1) Берём расшифровку и структурированное summary.\n// 2) Считаем дату в нужной таймзоне (по умолчанию Europe/Warsaw).\n\nconst TZ = 'Europe/Warsaw'; // должна совпадать с TIMEZONE в Apps Script\n\nconst raw = $json.message?.content ?? $json.content ?? $json.output ?? $json.text ?? $json;\nlet s;\nif (typeof raw === 'string') {\n  try { s = JSON.parse(raw); }\n  catch (e) {\n    const m = raw.match(/\\{[\\s\\S]*\\}/);\n    if (!m) throw new Error('OpenAI did not return JSON: ' + raw);\n    s = JSON.parse(m[0]);\n  }\n} else { s = raw; }\n\nconst summary = {\n  'Заголовок': s['Заголовок'] ?? '',\n  'Итоги': Array.isArray(s['Итоги']) ? s['Итоги'] : [],\n  'Инсайты': Array.isArray(s['Инсайты']) ? s['Инсайты'] : [],\n  'Проблемы': Array.isArray(s['Проблемы']) ? s['Проблемы'] : [],\n  'Следующие шаги': Array.isArray(s['Следующие шаги']) ? s['Следующие шаги'] : []\n};\n\n// Дата записи в локальной таймзоне -> YYYY-MM-DD\nconst now = new Date();\nconst fmt = new Intl.DateTimeFormat('en-CA', {\n  timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit'\n});\nconst date = fmt.format(now); // YYYY-MM-DD\n\nconst transcript = $('OpenAI Transcribe (Whisper)').item.json.text || '';\nconst chatId = $('Telegram Trigger (Voice)').item.json.message.chat.id;\n\nreturn {\n  json: {\n    token: 'REPLACE_SHARED_TOKEN', // должен совпадать с DIARY_TOKEN в Script Properties\n    date,\n    transcript,\n    summary,\n    chatId\n  }\n};\n"
+      },
+      "id": "build-payload",
+      "name": "Build Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10064,
+        3328
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "REPLACE_WEBAPP_URL",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "post-to-apps-script",
+      "name": "POST to Apps Script",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        10304,
+        3328
+      ],
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Telegram Trigger (Voice)').item.json.message.chat.id }}",
+        "text": "=✅ Запись за {{ $('Build Payload').item.json.date }} сохранена.\n\n*{{ $('Build Payload').item.json.summary['Заголовок'] }}*\n\n📄 День: {{ $json.monthlyDocUrl || '—' }}\n📁 Папка: {{ $json.folderUrl || '—' }}\n📝 Расшифровка: {{ $json.transcriptUrl || '—' }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "telegram-confirm",
+      "name": "Telegram Confirm",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        10544,
+        3328
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_TELEGRAM_DIARY",
+          "name": "Telegram Diary Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Telegram Trigger (Voice)').item.json.message.chat.id }}",
+        "text": "=❌ Не удалось сохранить запись дневника.\n\n*Шаг:* {{ $json.node?.name || $node?.name || 'неизвестный' }}\n*Ошибка:* {{ $json.error?.message || $json.error?.description || $json.error || 'неизвестная ошибка' }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "telegram-notify-error",
+      "name": "Telegram Notify Error",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        10544,
+        3600
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_TELEGRAM_DIARY",
+          "name": "Telegram Diary Bot"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Telegram Trigger (Voice)": {
+      "main": [
+        [
+          {
+            "node": "Is Voice Message?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Voice Message?": {
+      "main": [
+        [
+          {
+            "node": "Telegram Download Voice",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram Reject Non-Voice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram Download Voice": {
+      "main": [
+        [
+          {
+            "node": "OpenAI Transcribe (Whisper)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram Notify Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Transcribe (Whisper)": {
+      "main": [
+        [
+          {
+            "node": "OpenAI Summarize Day",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram Notify Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Summarize Day": {
+      "main": [
+        [
+          {
+            "node": "Build Payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram Notify Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Payload": {
+      "main": [
+        [
+          {
+            "node": "POST to Apps Script",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "POST to Apps Script": {
+      "main": [
+        [
+          {
+            "node": "Telegram Confirm",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram Notify Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "id": "diary-capture-wf01",
+  "tags": []
+}
