@@ -68,7 +68,18 @@ var CONFIG = {
   GEMINI_API_KEY: PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY') || '',  // ключ Gemini: https://aistudio.google.com/app/apikey
   LINEAR_API_KEY: PropertiesService.getScriptProperties().getProperty('LINEAR_API_KEY') || '',  // Personal API key: Linear → Settings → API
   LINEAR_TEAM_KEY: 'QIRE',          // Ключ команды в Linear, куда будут создаваться задачи
-  LINEAR_PROJECT_NAME: 'QIRE lab'   // Название проекта в Linear, в который будут добавляться задачи (опционально)
+  LINEAR_PROJECT_NAME: 'QIRE lab',  // Название проекта в Linear, в который будут добавляться задачи (опционально)
+
+  // --- Второй воркспейс Linear (Supply): https://linear.app/qirelabsupply/ ---
+  // У Linear Personal API key привязан к воркспейсу, поэтому для Supply нужен ОТДЕЛЬНЫЙ ключ.
+  // Создайте его, войдя в воркспейс qirelabsupply: Linear → Settings → API → Personal API keys,
+  // и сохраните в Script Properties под именем LINEAR_SUPPLY_API_KEY.
+  LINEAR_SUPPLY_API_KEY: PropertiesService.getScriptProperties().getProperty('LINEAR_SUPPLY_API_KEY') || '',
+  LINEAR_SUPPLY_TEAM_KEY: PropertiesService.getScriptProperties().getProperty('LINEAR_SUPPLY_TEAM_KEY') || '',     // ключ команды в Supply; если пусто и команда одна — определится автоматически
+  LINEAR_SUPPLY_PROJECT_NAME: PropertiesService.getScriptProperties().getProperty('LINEAR_SUPPLY_PROJECT_NAME') || '', // проект в Supply (опционально)
+
+  // Список значений «Сфера» (метки в Linear). Используется в диалоге выбора для Supply.
+  SPHERES: ['Legal', 'Marketing', 'Sales', 'Finance', 'Hiring Resources', 'Strategy', 'Operations', 'Business Model', 'Development']
 };
 
 // ======================== MENU ===============================
@@ -85,6 +96,7 @@ function onOpen() {
     .addItem('Удалить автозадачи на завтра', 'clearAutoEventsTomorrow')
     .addSeparator()
     .addItem('Создать задачи на команду', 'createTasksInLinear')
+    .addItem('Создать задачи на Supply', 'showSupplySphereDialog')
     .addItem('Архивировать запланированные задачи', 'archivePlannedTasks')
     .addToUi();
 }
@@ -473,6 +485,221 @@ function createTasksInLinear() {
   );
 }
 
+// ==================== SUPPLY (qirelabsupply) =================
+//
+//  Отдельный пункт меню «Создать задачи на Supply».
+//  Открывает диалог с чекбоксами «Сфера». Пользователь отмечает одну,
+//  несколько или ни одной сферы и нажимает «Создать задачи». По выбору
+//  создаются задачи в воркспейсе Linear https://linear.app/qirelabsupply/
+//  с меткой, равной значению «Сфера».
+
+/**
+ * Opens the modal dialog with sphere checkboxes for the Supply workflow.
+ */
+function showSupplySphereDialog() {
+  var ui = SpreadsheetApp.getUi();
+  if (!CONFIG.LINEAR_SUPPLY_API_KEY) {
+    ui.alert(
+      'Не указан LINEAR_SUPPLY_API_KEY.\n\n' +
+      'Войдите в воркспейс Supply (https://linear.app/qirelabsupply/), создайте ' +
+      'Personal API key (Settings → API → Personal API keys) и сохраните его в ' +
+      'Project Settings → Script Properties под именем LINEAR_SUPPLY_API_KEY.'
+    );
+    return;
+  }
+
+  var checkboxes = CONFIG.SPHERES.map(function(s) {
+    var safe = String(s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    return '<label class="row"><input type="checkbox" value="' + safe + '"> ' + safe + '</label>';
+  }).join('');
+
+  var html =
+    '<!DOCTYPE html><html><head><base target="_top"><style>' +
+    'body{font-family:Arial,sans-serif;font-size:13px;margin:12px;color:#202124;}' +
+    'h3{margin:0 0 8px;font-size:14px;}' +
+    'p.hint{margin:0 0 10px;color:#5f6368;}' +
+    '.row{display:block;padding:4px 0;cursor:pointer;}' +
+    '.row input{margin-right:8px;}' +
+    '.actions{margin-top:14px;}' +
+    'button{font-size:13px;padding:6px 14px;border:0;border-radius:4px;cursor:pointer;background:#4f46e5;color:#fff;}' +
+    'button:disabled{opacity:.5;cursor:default;}' +
+    '#status{margin-top:12px;white-space:pre-wrap;color:#444;}' +
+    '</style></head><body>' +
+    '<h3>Сферы для выгрузки в Supply</h3>' +
+    '<p class="hint">Отметьте одну или несколько сфер. Если не отметить ни одной — ' +
+    'будут выгружены все задачи, у которых указана Сфера. Уже запланированные задачи пропускаются.</p>' +
+    '<div id="list">' + checkboxes + '</div>' +
+    '<div class="actions"><button id="create" onclick="onCreate()">Создать задачи</button></div>' +
+    '<div id="status"></div>' +
+    '<script>' +
+    'function onCreate(){' +
+    'var boxes=document.querySelectorAll("#list input[type=checkbox]");' +
+    'var selected=[];for(var i=0;i<boxes.length;i++){if(boxes[i].checked)selected.push(boxes[i].value);}' +
+    'var btn=document.getElementById("create");btn.disabled=true;' +
+    'document.getElementById("status").textContent="Создаю задачи в Linear…";' +
+    'google.script.run.withSuccessHandler(onDone).withFailureHandler(onErr).createSupplyTasksFromSelection(selected);' +
+    '}' +
+    'function onDone(summary){' +
+    'document.getElementById("status").textContent=summary;' +
+    'var btn=document.getElementById("create");btn.textContent="Закрыть";btn.disabled=false;' +
+    'btn.onclick=function(){google.script.host.close();};' +
+    '}' +
+    'function onErr(err){' +
+    'document.getElementById("status").textContent="Ошибка: "+((err&&err.message)?err.message:err);' +
+    'document.getElementById("create").disabled=false;' +
+    '}' +
+    '<\/script></body></html>';
+
+  var output = HtmlService.createHtmlOutput(html).setWidth(380).setHeight(460);
+  ui.showModalDialog(output, 'Создать задачи на Supply');
+}
+
+/**
+ * Called from the Supply dialog. Creates Linear issues in the Supply workspace
+ * for unplanned sheet tasks matching the selected spheres (or every unplanned
+ * task that has a sphere, when nothing is selected). Each issue gets a label
+ * equal to its "Сфера" value. Returns a human-readable summary string that the
+ * dialog displays. On success the task's "Запланировано" checkbox is enabled.
+ */
+function createSupplyTasksFromSelection(selectedSpheres) {
+  var apiKey = CONFIG.LINEAR_SUPPLY_API_KEY;
+  if (!apiKey) return 'Не указан LINEAR_SUPPLY_API_KEY в Script Properties.';
+
+  selectedSpheres = selectedSpheres || [];
+  var filterBySphere = selectedSpheres.length > 0;
+  var wanted = {};
+  for (var s = 0; s < selectedSpheres.length; s++) {
+    wanted[String(selectedSpheres[s]).trim().toLowerCase()] = true;
+  }
+
+  var tasks = readTasks();
+  var candidates = tasks.filter(function(t) {
+    if (t.planned) return false;
+    if (!t.sphere) return false; // только задачи с указанной Сферой
+    if (filterBySphere && !wanted[t.sphere.toLowerCase()]) return false;
+    return true;
+  });
+
+  if (candidates.length === 0) {
+    return filterBySphere
+      ? 'Нет незапланированных задач с выбранными сферами.'
+      : 'Нет незапланированных задач с указанной сферой.';
+  }
+
+  // Resolve team + optional project in the Supply workspace once
+  var teamId;
+  var projectId = null;
+  try {
+    teamId = resolveSupplyTeamId(apiKey);
+    if (!teamId) {
+      return 'Не удалось определить команду в воркспейсе Supply.\n' +
+        'Укажите ключ команды в Script Properties → LINEAR_SUPPLY_TEAM_KEY.';
+    }
+    if (CONFIG.LINEAR_SUPPLY_PROJECT_NAME) {
+      projectId = resolveLinearProjectId(CONFIG.LINEAR_SUPPLY_PROJECT_NAME, teamId, apiKey);
+      if (!projectId) {
+        return 'Проект "' + CONFIG.LINEAR_SUPPLY_PROJECT_NAME + '" не найден в воркспейсе Supply.';
+      }
+    }
+  } catch (e) {
+    return 'Ошибка обращения к Linear (Supply): ' + e.message;
+  }
+
+  var userIdCache = {};
+  var labelIdCache = {};
+  var createdRows = [];
+  var createdIssues = [];
+  var failed = [];
+
+  for (var i = 0; i < candidates.length; i++) {
+    var task = candidates[i];
+    try {
+      // Метки из Сферы (и Проекта, если есть) — ищутся/создаются в воркспейсе Supply
+      var labelNames = [];
+      if (task.sphere) labelNames.push(task.sphere);
+      if (task.project) labelNames.push(task.project);
+
+      var labelIds = [];
+      for (var ln = 0; ln < labelNames.length; ln++) {
+        var labelName = labelNames[ln];
+        var labelId = labelIdCache[labelName];
+        if (labelId === undefined) {
+          labelId = findOrCreateLinearLabel(labelName, teamId, apiKey);
+          labelIdCache[labelName] = labelId;
+        }
+        if (labelId) labelIds.push(labelId);
+      }
+
+      // Исполнитель необязателен: ищем по email, если есть; иначе задача без исполнителя
+      var assigneeId = null;
+      if (task.assignee) {
+        assigneeId = userIdCache[task.assignee];
+        if (assigneeId === undefined) {
+          assigneeId = findLinearUserByEmail(task.assignee, apiKey);
+          userIdCache[task.assignee] = assigneeId;
+        }
+      }
+
+      var hours = task.durationMin / 60;
+      var estimate = Math.max(1, Math.ceil(hours));
+
+      var description = '';
+      if (task.project) description += '**Проект:** ' + task.project + '\n';
+      if (task.sphere) description += '**Сфера:** ' + task.sphere + '\n';
+      description += '**Приоритет:** ' + task.priority + '\n';
+      description += '**Тип:** ' + getTaskTypeLabel(task.taskType);
+      if (task.comment) description += '\n**Комментарий:** ' + task.comment;
+
+      var input = {
+        teamId: teamId,
+        title: task.name,
+        description: description,
+        priority: linearPriorityFromLetter(task.priority),
+        estimate: estimate
+      };
+      if (assigneeId) input.assigneeId = assigneeId;
+      if (labelIds.length > 0) input.labelIds = labelIds;
+      if (projectId) input.projectId = projectId;
+
+      var identifier = createLinearIssue(input, apiKey);
+      if (identifier) {
+        createdRows.push(task.rowIndex);
+        createdIssues.push({ id: identifier, title: task.name });
+      } else {
+        failed.push(task.name + ' — Linear отклонил создание');
+      }
+    } catch (e) {
+      failed.push(task.name + ' — ' + e.message);
+    }
+  }
+
+  if (createdRows.length > 0) markPlanned(createdRows, true);
+
+  var createdList = createdIssues.map(function(it) {
+    return it.id + ' — ' + it.title;
+  }).join('\n');
+
+  return 'Создано в Supply: ' + createdRows.length + ' из ' + candidates.length +
+    (createdList ? '\n\nСозданы:\n' + createdList : '') +
+    (failed.length > 0 ? '\n\nНе удалось:\n' + failed.join('\n') : '');
+}
+
+/**
+ * Resolves the team id in the Supply workspace. Uses LINEAR_SUPPLY_TEAM_KEY if
+ * set; otherwise, if the workspace has exactly one team, uses it. Returns null
+ * when the team cannot be determined unambiguously.
+ */
+function resolveSupplyTeamId(apiKey) {
+  if (CONFIG.LINEAR_SUPPLY_TEAM_KEY) {
+    return resolveLinearTeamId(CONFIG.LINEAR_SUPPLY_TEAM_KEY, apiKey);
+  }
+  var data = callLinearAPI('query { teams { nodes { id key } } }', {}, apiKey);
+  var nodes = data.teams.nodes;
+  return nodes.length === 1 ? nodes[0].id : null;
+}
+
 /**
  * Maps a priority letter from the sheet to Linear's priority integer.
  * Linear priorities: 0=No priority, 1=Urgent, 2=High, 3=Medium, 4=Low.
@@ -487,12 +714,14 @@ function linearPriorityFromLetter(letter) {
 
 /**
  * Calls the Linear GraphQL API. Throws on HTTP or GraphQL errors.
+ * apiKey is optional and defaults to the main (QIRE) workspace key, so existing
+ * callers keep working; pass the Supply key to target the qirelabsupply workspace.
  */
-function callLinearAPI(query, variables) {
+function callLinearAPI(query, variables, apiKey) {
   var response = UrlFetchApp.fetch('https://api.linear.app/graphql', {
     method: 'post',
     contentType: 'application/json',
-    headers: { 'Authorization': CONFIG.LINEAR_API_KEY },
+    headers: { 'Authorization': apiKey || CONFIG.LINEAR_API_KEY },
     payload: JSON.stringify({ query: query, variables: variables || {} }),
     muteHttpExceptions: true
   });
@@ -509,10 +738,11 @@ function callLinearAPI(query, variables) {
 }
 
 /** Resolves a Linear team key (e.g. "ENG") to its UUID team id. */
-function resolveLinearTeamId(teamKey) {
+function resolveLinearTeamId(teamKey, apiKey) {
   var data = callLinearAPI(
     'query($key: String!) { teams(filter: { key: { eq: $key } }) { nodes { id key } } }',
-    { key: teamKey }
+    { key: teamKey },
+    apiKey
   );
   var nodes = data.teams.nodes;
   return nodes.length > 0 ? nodes[0].id : null;
@@ -522,10 +752,11 @@ function resolveLinearTeamId(teamKey) {
  * Resolves a Linear project name to its id. Prefers projects that include
  * the given team. Returns null if not found.
  */
-function resolveLinearProjectId(projectName, teamId) {
+function resolveLinearProjectId(projectName, teamId, apiKey) {
   var data = callLinearAPI(
     'query($name: String!) { projects(filter: { name: { eq: $name } }) { nodes { id name teams { nodes { id } } } } }',
-    { name: projectName }
+    { name: projectName },
+    apiKey
   );
   var nodes = data.projects.nodes;
   if (nodes.length === 0) return null;
@@ -539,10 +770,11 @@ function resolveLinearProjectId(projectName, teamId) {
 }
 
 /** Looks up a Linear user id by email. Returns null if not found. */
-function findLinearUserByEmail(email) {
+function findLinearUserByEmail(email, apiKey) {
   var data = callLinearAPI(
     'query($email: String!) { users(filter: { email: { eq: $email } }) { nodes { id email } } }',
-    { email: email }
+    { email: email },
+    apiKey
   );
   var nodes = data.users.nodes;
   return nodes.length > 0 ? nodes[0].id : null;
@@ -553,10 +785,11 @@ function findLinearUserByEmail(email) {
  * scoped to the given team or workspace-wide. Creates a team-scoped label
  * if none exists.
  */
-function findOrCreateLinearLabel(name, teamId) {
+function findOrCreateLinearLabel(name, teamId, apiKey) {
   var data = callLinearAPI(
     'query($name: String!) { issueLabels(filter: { name: { eq: $name } }) { nodes { id name team { id } } } }',
-    { name: name }
+    { name: name },
+    apiKey
   );
   var nodes = data.issueLabels.nodes;
   for (var i = 0; i < nodes.length; i++) {
@@ -566,7 +799,8 @@ function findOrCreateLinearLabel(name, teamId) {
   }
   var created = callLinearAPI(
     'mutation($input: IssueLabelCreateInput!) { issueLabelCreate(input: $input) { success issueLabel { id } } }',
-    { input: { teamId: teamId, name: name } }
+    { input: { teamId: teamId, name: name } },
+    apiKey
   );
   if (created.issueLabelCreate.success) {
     return created.issueLabelCreate.issueLabel.id;
@@ -578,10 +812,11 @@ function findOrCreateLinearLabel(name, teamId) {
  * Creates a Linear issue.
  * Returns the human-readable identifier (e.g. "QIRE-42") on success, null otherwise.
  */
-function createLinearIssue(input) {
+function createLinearIssue(input, apiKey) {
   var data = callLinearAPI(
     'mutation($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { id identifier url } } }',
-    { input: input }
+    { input: input },
+    apiKey
   );
   if (!data.issueCreate.success) return null;
   return data.issueCreate.issue.identifier;
