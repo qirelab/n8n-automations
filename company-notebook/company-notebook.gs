@@ -48,11 +48,14 @@ var CONFIG = {
   // «Build Payload» в n8n.
   TIMEZONE: 'Europe/Warsaw',
 
-  // Секреты/ID берутся из Script Properties (Project Settings → Script Properties).
+  // Секреты берутся из Script Properties (Project Settings → Script Properties).
   TOKEN_PROP: 'DIARY_TOKEN',
   SPREADSHEET_ID_PROP: 'DIARY_SPREADSHEET_ID',
 
-  // Название реестр-таблицы, если её придётся создавать автоматически.
+  // Реестр-таблица. Используется существующая таблица (ID ниже). Приоритет:
+  // Script Property DIARY_SPREADSHEET_ID → SPREADSHEET_ID_DEFAULT → создать новую.
+  SPREADSHEET_ID_DEFAULT: '1G5vFw0inl0HR7xRPHJ4O86t4fB5xcFlNT0O7GJdE8iQ',
+  // Название реестр-таблицы, если её всё же придётся создавать автоматически.
   SPREADSHEET_NAME: 'Дневник компании — Реестр',
 
   MONTHS_RU: ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
@@ -277,9 +280,9 @@ function insertHeading_(body, idx, text, heading) {
 // ----- Registry (Sheets) helpers -----
 
 function getSpreadsheet_() {
-  var id = props_().getProperty(CONFIG.SPREADSHEET_ID_PROP);
+  var id = props_().getProperty(CONFIG.SPREADSHEET_ID_PROP) || CONFIG.SPREADSHEET_ID_DEFAULT;
   if (id) return SpreadsheetApp.openById(id);
-  // Создаём и кладём в корневую папку дневника.
+  // Запасной вариант: создаём и кладём в корневую папку дневника.
   var ss = SpreadsheetApp.create(CONFIG.SPREADSHEET_NAME);
   var file = DriveApp.getFileById(ss.getId());
   file.moveTo(DriveApp.getFolderById(CONFIG.ROOT_FOLDER_ID));
@@ -295,9 +298,13 @@ function getOrCreateYearSheet_(ss, year) {
     sheet.getRange(1, 1, 1, CONFIG.REGISTRY_HEADERS.length).setFontWeight('bold');
     sheet.setFrozenRows(1);
     sheet.hideColumns(CONFIG.REGISTRY_HEADERS.indexOf('_dates') + 1);
-    // Если есть пустая вкладка по умолчанию — удалим её.
+    // Удаляем стартовую вкладку по умолчанию ТОЛЬКО если она пустая —
+    // существующие данные в таблице не трогаем.
     var def = ss.getSheetByName('Sheet1') || ss.getSheetByName('Лист1');
-    if (def && def.getName() !== year && ss.getSheets().length > 1) ss.deleteSheet(def);
+    if (def && def.getName() !== year && ss.getSheets().length > 1 &&
+        def.getLastRow() === 0 && def.getLastColumn() === 0) {
+      ss.deleteSheet(def);
+    }
   }
   return sheet;
 }
