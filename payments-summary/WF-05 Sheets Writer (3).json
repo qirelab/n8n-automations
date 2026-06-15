@@ -240,13 +240,13 @@
             "Дата оплаты": "={{ $json.registryRow['Дата оплаты'] }}",
             "Сумма": "={{ $json.registryRow['Сумма'] }}",
             "Валюта": "={{ $json.registryRow['Валюта'] }}",
-            "Сумма в RUB (оригинал)": "={{ $json.registryRow['Сумма в RUB (оригинал)'] }}",
             "Статус оплаты": "={{ $json.registryRow['Статус оплаты'] }}",
             "Страна": "={{ $json.registryRow['Страна'] }}",
             "Ссылка на документ": "={{ $json.registryRow['Ссылка на документ'] }}",
             "Описание AI": "={{ $json.registryRow['Описание AI'] }}",
             "UUID": "={{ $json.registryRow['UUID'] }}",
-            "Номер инвойса": "={{ $json.registryRow['Номер инвойса'] }}"
+            "Номер инвойса": "={{ $json.registryRow['Номер инвойса'] }}",
+            "Сумма в RUB (оригинал)": "={{ $json.registryRow['Сумма в RUB (оригинал)'] }}"
           },
           "matchingColumns": [],
           "schema": [
@@ -314,15 +314,6 @@
               "canBeUsedToMatch": false
             },
             {
-              "id": "Сумма в RUB (оригинал)",
-              "displayName": "Сумма в RUB (оригинал)",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "number",
-              "canBeUsedToMatch": false
-            },
-            {
               "id": "Статус оплаты",
               "displayName": "Статус оплаты",
               "required": false,
@@ -374,6 +365,15 @@
               "defaultMatch": false,
               "display": true,
               "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Сумма в RUB (оригинал)",
+              "displayName": "Сумма в RUB (оригинал)",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
               "canBeUsedToMatch": false
             }
           ]
