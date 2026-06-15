@@ -625,6 +625,44 @@
           "name": "MINE TG"
         }
       }
+    },
+    {
+      "parameters": {},
+      "id": "cccccccc-cccc-cccc-cccc-cccccccccc01",
+      "name": "Set Commands (manual)",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -992,
+        1120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/setMyCommands",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"commands\": [{\"command\": \"start\", \"description\": \"Приветствие и справка\"}, {\"command\": \"status\", \"description\": \"Последние 5 операций\"}, {\"command\": \"vpsk\", \"description\": \"Загрузить банковскую выписку\"}, {\"command\": \"reconcile\", \"description\": \"Запустить сверку\"}, {\"command\": \"missing\", \"description\": \"Незакрытые позиции\"}, {\"command\": \"report\", \"description\": \"Ссылка на отчёт в Google Sheets\"}, {\"command\": \"update\", \"description\": \"Пересобрать объединённый Реестр для бухгалтерии\"}, {\"command\": \"settings\", \"description\": \"Настройки уведомлений и расписания\"}, {\"command\": \"cancel\", \"description\": \"Отменить текущую операцию\"}]}",
+        "options": {}
+      },
+      "id": "cccccccc-cccc-cccc-cccc-cccccccccc02",
+      "name": "Set Bot Commands",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -700,
+        1120
+      ]
     }
   ],
   "pinData": {},
@@ -832,6 +870,17 @@
         [
           {
             "node": "Call WF06 Stmt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Commands (manual)": {
+      "main": [
+        [
+          {
+            "node": "Set Bot Commands",
             "type": "main",
             "index": 0
           }
