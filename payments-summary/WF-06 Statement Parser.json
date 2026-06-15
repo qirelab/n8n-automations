@@ -19,7 +19,7 @@
     },
     {
       "parameters": {
-        "content": "### Форматы выписок и Gemini\n\nGemini напрямую читает: **PDF, CSV (text/csv), TXT (text/plain), JPEG, PNG**. Эти форматы идут в Gemini Vision как есть.\n\n**DOCX Gemini НЕ поддерживает** (ошибка 400 Unsupported MIME type). Поэтому DOCX конвертируется в PDF через Google Drive:\n\n`Is DOCX?` → **Drive Upload DOCX** (uploadType=media) → **Drive Convert to GDoc** (files.copy → Google Doc) → **Drive Export PDF** → **Prep PDF** → Gemini Vision.\n\nВременные файлы в Drive удаляются нодами **Delete Temp GDoc/DOCX** (continueOnFail — сбой очистки не ломает парсинг).\n\n**Требуется:** credential `Google Drive account` (googleDriveOAuth2Api) на 4 Drive-нодах. Если files.copy не конвертирует — fallback: загружать через uploadType=multipart с metadata mimeType.",
+        "content": "### Форматы выписок и Gemini\n\nGemini напрямую читает: **PDF, CSV (text/csv), TXT (text/plain), JPEG, PNG**. Эти форматы идут в Gemini Vision как есть.\n\n**DOCX Gemini НЕ поддерживает** (ошибка 400 Unsupported MIME type). Раньше DOCX конвертировался в PDF через Google Drive (files.copy → Google Doc → export PDF), но эта конвертация **ломала кодировку** длинных описаний (назначение платежа Приорбанка превращалось в `������`), хотя контрагент выживал.\n\n**Текущий путь (без Google Docs, кодировка сохраняется):**\n\n`Is DOCX?` → **Prep DOCX as Zip** (бинарь .docx помечается как zip) → **Decompress DOCX** (нода Compression распаковывает архив) → **Extract DOCX Text** (читает `word/document.xml` как UTF-8, вытаскивает плоский текст, отдаёт как text/plain) → **Gemini Vision** (читает text/plain напрямую).\n\nDOCX — это ZIP с XML в UTF-8, поэтому прямое извлечение текста сохраняет кириллицу без потерь. Google Drive credential для DOCX больше не нужен.",
         "height": 380,
         "width": 420,
         "color": 3
@@ -193,159 +193,6 @@
         -5120,
         2960
       ]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "https://www.googleapis.com/upload/drive/v3/files?uploadType=media",
-        "authentication": "predefinedCredentialType",
-        "nodeCredentialType": "googleDriveOAuth2Api",
-        "sendBody": true,
-        "contentType": "binaryData",
-        "inputDataFieldName": "data",
-        "options": {}
-      },
-      "id": "f6a10002-0000-4a01-9001-0000000000d2",
-      "name": "Drive Upload DOCX",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        -5232,
-        2680
-      ],
-      "retryOnFail": true,
-      "maxTries": 3,
-      "waitBetweenTries": 2000,
-      "credentials": {
-        "googleDriveOAuth2Api": {
-          "id": "S9QNJad2kfoTbu9F",
-          "name": "Google Drive account"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "=https://www.googleapis.com/drive/v3/files/{{ $json.id }}/copy",
-        "authentication": "predefinedCredentialType",
-        "nodeCredentialType": "googleDriveOAuth2Api",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "{\n  \"name\": \"wf06-tmp-statement\",\n  \"mimeType\": \"application/vnd.google-apps.document\"\n}",
-        "options": {}
-      },
-      "id": "f6a10003-0000-4a01-9001-0000000000d3",
-      "name": "Drive Convert to GDoc",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        -5008,
-        2680
-      ],
-      "retryOnFail": true,
-      "maxTries": 3,
-      "waitBetweenTries": 2000,
-      "credentials": {
-        "googleDriveOAuth2Api": {
-          "id": "S9QNJad2kfoTbu9F",
-          "name": "Google Drive account"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "method": "GET",
-        "url": "=https://www.googleapis.com/drive/v3/files/{{ $json.id }}/export?mimeType=application%2Fpdf",
-        "authentication": "predefinedCredentialType",
-        "nodeCredentialType": "googleDriveOAuth2Api",
-        "options": {
-          "response": {
-            "response": {
-              "responseFormat": "file",
-              "outputPropertyName": "data"
-            }
-          }
-        }
-      },
-      "id": "f6a10004-0000-4a01-9001-0000000000d4",
-      "name": "Drive Export PDF",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        -4784,
-        2680
-      ],
-      "retryOnFail": true,
-      "maxTries": 3,
-      "waitBetweenTries": 2000,
-      "credentials": {
-        "googleDriveOAuth2Api": {
-          "id": "S9QNJad2kfoTbu9F",
-          "name": "Google Drive account"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "mode": "runOnceForEachItem",
-        "jsCode": "// === WF-06 [2b] Prep PDF for Gemini — после конвертации DOCX\\u2192PDF ===\n// Drive export вернул PDF в binary.data. Проставляем mimeType=application/pdf\n// и восстанавливаем chatId, чтобы ветка слилась обратно в Gemini Vision.\n\nconst item = $input.item;\nif (!item.binary || !item.binary.data) {\n  throw new Error('WF-06 Prep PDF: no PDF binary after Drive export');\n}\n\nitem.binary.data.mimeType = 'application/pdf';\nitem.binary.data.fileName = 'statement.pdf';\nitem.binary.data.fileType = 'application';\n\nconst v = $('Input Validator').first().json;\nitem.json = {\n  chatId: v.chatId,\n  _detectedMime: 'application/pdf',\n  _convertedFromDocx: true\n};\n\nreturn item;"
-      },
-      "id": "f6a10005-0000-4a01-9001-0000000000d5",
-      "name": "Prep PDF for Gemini",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        -4784,
-        2860
-      ]
-    },
-    {
-      "parameters": {
-        "method": "DELETE",
-        "url": "=https://www.googleapis.com/drive/v3/files/{{ $('Drive Convert to GDoc').item.json.id }}",
-        "authentication": "predefinedCredentialType",
-        "nodeCredentialType": "googleDriveOAuth2Api",
-        "options": {}
-      },
-      "id": "f6a10006-0000-4a01-9001-0000000000d6",
-      "name": "Delete Temp GDoc",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        -4560,
-        2680
-      ],
-      "continueOnFail": true,
-      "credentials": {
-        "googleDriveOAuth2Api": {
-          "id": "S9QNJad2kfoTbu9F",
-          "name": "Google Drive account"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "method": "DELETE",
-        "url": "=https://www.googleapis.com/drive/v3/files/{{ $('Drive Upload DOCX').item.json.id }}",
-        "authentication": "predefinedCredentialType",
-        "nodeCredentialType": "googleDriveOAuth2Api",
-        "options": {}
-      },
-      "id": "f6a10007-0000-4a01-9001-0000000000d7",
-      "name": "Delete Temp DOCX",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        -4336,
-        2680
-      ],
-      "continueOnFail": true,
-      "credentials": {
-        "googleDriveOAuth2Api": {
-          "id": "S9QNJad2kfoTbu9F",
-          "name": "Google Drive account"
-        }
-      }
     },
     {
       "parameters": {
@@ -749,6 +596,47 @@
         -2768,
         3040
       ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// === WF-06 [2a-docx] Prep DOCX as Zip ===\n// DOCX — это ZIP-архив. Помечаем бинарь как zip, чтобы нода Decompress распаковала его.\nconst item = $input.item;\nif (!item.binary || !item.binary.data) {\n  throw new Error('WF-06 Prep DOCX as Zip: no binary data on input item');\n}\nitem.binary.data.fileName = 'statement.zip';\nitem.binary.data.fileExtension = 'zip';\nitem.binary.data.mimeType = 'application/zip';\nreturn item;\n"
+      },
+      "id": "dddddddd-0000-0000-0000-00000000d001",
+      "name": "Prep DOCX as Zip",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -5000,
+        2760
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "decompress",
+        "binaryPropertyName": "data",
+        "outputPrefix": "file"
+      },
+      "id": "dddddddd-0000-0000-0000-00000000d002",
+      "name": "Decompress DOCX",
+      "type": "n8n-nodes-base.compression",
+      "typeVersion": 1.1,
+      "position": [
+        -4820,
+        2760
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// === WF-06 [2b-docx] Extract DOCX Text ===\n// Берём распакованные файлы DOCX (нода Decompress), находим word/document.xml,\n// декодируем как UTF-8 и вытаскиваем чистый текст. Кириллица сохраняется без потерь —\n// в обход конвертации через Google Docs, которая ломала кодировку «Описания».\n// Результат отдаём как text/plain бинарь 'data' — Gemini читает text/plain напрямую.\n\nconst item = $input.item;\nif (!item.binary) {\n  throw new Error('WF-06 Extract DOCX Text: no binary on item after decompress');\n}\n\n// Находим document.xml среди всех распакованных бинарей (имя ключа не важно)\nlet xml = '';\nfor (const key of Object.keys(item.binary)) {\n  const b = item.binary[key];\n  if (!b || !b.data) continue;\n  const text = Buffer.from(b.data, 'base64').toString('utf8');\n  if (text.indexOf('<w:document') !== -1 || text.indexOf('<w:body') !== -1) {\n    xml = text;\n    break;\n  }\n}\nif (!xml) {\n  throw new Error('WF-06 Extract DOCX Text: word/document.xml not found in archive');\n}\n\n// XML → плоский текст: абзацы/строки таблиц -> переносы, ячейки -> табы\nlet txt = xml\n  .replace(/<w:tab\\b[^>]*\\/>/g, ' ')\n  .replace(/<w:br\\b[^>]*\\/?>/g, '\\n')\n  .replace(/<\\/w:p>/g, '\\n')\n  .replace(/<\\/w:tr>/g, '\\n')\n  .replace(/<\\/w:tc>/g, '\\t')\n  .replace(/<[^>]+>/g, '');\n\n// XML-сущности\ntxt = txt\n  .replace(/&amp;/g, '&')\n  .replace(/&lt;/g, '<')\n  .replace(/&gt;/g, '>')\n  .replace(/&quot;/g, '\"')\n  .replace(/&apos;/g, \"'\")\n  .replace(/&#(\\d+);/g, (m, n) => String.fromCodePoint(parseInt(n, 10)))\n  .replace(/&#x([0-9a-fA-F]+);/g, (m, n) => String.fromCodePoint(parseInt(n, 16)));\n\n// Нормализуем пробелы и пустые строки\ntxt = txt\n  .replace(/[ \\t]+/g, ' ')\n  .replace(/ *\\n */g, '\\n')\n  .replace(/\\n{3,}/g, '\\n\\n')\n  .trim();\n\nif (!txt) {\n  throw new Error('WF-06 Extract DOCX Text: extracted text is empty');\n}\n\nconst chatId = $('Input Validator').first().json.chatId;\nconst b64 = Buffer.from(txt, 'utf8').toString('base64');\n\nitem.json = { chatId, _detectedMime: 'text/plain', _fromDocxText: true };\nitem.binary = {\n  data: {\n    data: b64,\n    mimeType: 'text/plain',\n    fileName: 'statement.txt',\n    fileExtension: 'txt'\n  }\n};\nreturn item;\n"
+      },
+      "id": "dddddddd-0000-0000-0000-00000000d003",
+      "name": "Extract DOCX Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -4640,
+        2760
+      ]
     }
   ],
   "pinData": {},
@@ -830,7 +718,7 @@
       "main": [
         [
           {
-            "node": "Drive Upload DOCX",
+            "node": "Prep DOCX as Zip",
             "type": "main",
             "index": 0
           }
@@ -838,66 +726,6 @@
         [
           {
             "node": "Gemini Vision",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Drive Upload DOCX": {
-      "main": [
-        [
-          {
-            "node": "Drive Convert to GDoc",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Drive Convert to GDoc": {
-      "main": [
-        [
-          {
-            "node": "Drive Export PDF",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Drive Export PDF": {
-      "main": [
-        [
-          {
-            "node": "Prep PDF for Gemini",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Delete Temp GDoc",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Prep PDF for Gemini": {
-      "main": [
-        [
-          {
-            "node": "Gemini Vision",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Delete Temp GDoc": {
-      "main": [
-        [
-          {
-            "node": "Delete Temp DOCX",
             "type": "main",
             "index": 0
           }
@@ -1026,6 +854,39 @@
         [
           {
             "node": "Respond to WF-01",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prep DOCX as Zip": {
+      "main": [
+        [
+          {
+            "node": "Decompress DOCX",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decompress DOCX": {
+      "main": [
+        [
+          {
+            "node": "Extract DOCX Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract DOCX Text": {
+      "main": [
+        [
+          {
+            "node": "Gemini Vision",
             "type": "main",
             "index": 0
           }
