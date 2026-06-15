@@ -11,7 +11,10 @@
       "name": "Sticky Note",
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
-      "position": [-400, -200]
+      "position": [
+        -400,
+        -200
+      ]
     },
     {
       "parameters": {
@@ -24,7 +27,10 @@
       "name": "Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
-      "position": [-400, 400],
+      "position": [
+        -400,
+        400
+      ],
       "webhookId": "wf08-update"
     },
     {
@@ -35,7 +41,10 @@
       "name": "Parse Input",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [-180, 400]
+      "position": [
+        -180,
+        400
+      ]
     },
     {
       "parameters": {
@@ -55,7 +64,10 @@
       "name": "Read Source Реестр",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.5,
-      "position": [40, 400],
+      "position": [
+        40,
+        400
+      ],
       "alwaysOutputData": true,
       "executeOnce": true,
       "retryOnFail": true,
@@ -76,7 +88,10 @@
       "name": "Collapse 1",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [260, 400]
+      "position": [
+        260,
+        400
+      ]
     },
     {
       "parameters": {
@@ -96,7 +111,10 @@
       "name": "Read Source Банк",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.5,
-      "position": [480, 400],
+      "position": [
+        480,
+        400
+      ],
       "alwaysOutputData": true,
       "executeOnce": true,
       "retryOnFail": true,
@@ -117,7 +135,10 @@
       "name": "Collapse 2",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [700, 400]
+      "position": [
+        700,
+        400
+      ]
     },
     {
       "parameters": {
@@ -137,7 +158,10 @@
       "name": "Read Target Реестр",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.5,
-      "position": [920, 400],
+      "position": [
+        920,
+        400
+      ],
       "alwaysOutputData": true,
       "executeOnce": true,
       "retryOnFail": true,
@@ -158,7 +182,10 @@
       "name": "Build Merged Dataset",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1140, 400]
+      "position": [
+        1140,
+        400
+      ]
     },
     {
       "parameters": {
@@ -182,7 +209,10 @@
       "name": "Clear Target Data",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.5,
-      "position": [1360, 400],
+      "position": [
+        1360,
+        400
+      ],
       "executeOnce": true,
       "retryOnFail": true,
       "maxTries": 3,
@@ -193,6 +223,19 @@
           "name": "Google Sheets account"
         }
       }
+    },
+    {
+      "parameters": {
+        "jsCode": "// === WF-08 Restore Rows ===\n// 'Clear Target Data' стоит на Execute Once и пропускает дальше только 1 item,\n// из-за чего Append добавлял лишь одну строку. Здесь восстанавливаем ПОЛНЫЙ\n// набор объединённых строк, чтобы Append записал их все.\nreturn $('Build Merged Dataset').all();"
+      },
+      "id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      "name": "Restore Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1580,
+        400
+      ]
     },
     {
       "parameters": {
@@ -234,27 +277,174 @@
           },
           "matchingColumns": [],
           "schema": [
-            { "id": "Nr", "displayName": "Nr", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
-            { "id": "ID", "displayName": "ID", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
-            { "id": "Статус", "displayName": "Статус", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
-            { "id": "Дата документа", "displayName": "Дата документа", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
-            { "id": "Тип документа", "displayName": "Тип документа", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
-            { "id": "Номер документа", "displayName": "Номер документа", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
-            { "id": "Контрагент", "displayName": "Контрагент", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
-            { "id": "Товар или услуга", "displayName": "Товар или услуга", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
-            { "id": "Ед измерения", "displayName": "Ед измерения", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
-            { "id": "Количество", "displayName": "Количество", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
-            { "id": "Стоимость", "displayName": "Стоимость", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
-            { "id": "НДС", "displayName": "НДС", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
-            { "id": "Сумма брутто", "displayName": "Сумма брутто", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
-            { "id": "Дата оплаты", "displayName": "Дата оплаты", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
-            { "id": "Сумма оплаты", "displayName": "Сумма оплаты", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
-            { "id": "Счет / Источник", "displayName": "Счет / Источник", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
-            { "id": "В бухгалтерию", "displayName": "В бухгалтерию", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
-            { "id": "Статус оплаты", "displayName": "Статус оплаты", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
-            { "id": "Страна", "displayName": "Страна", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
-            { "id": "Ссылка на документ", "displayName": "Ссылка на документ", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" },
-            { "id": "Описание ИИ", "displayName": "Описание ИИ", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "type": "string" }
+            {
+              "id": "Nr",
+              "displayName": "Nr",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "ID",
+              "displayName": "ID",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "Статус",
+              "displayName": "Статус",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "Дата документа",
+              "displayName": "Дата документа",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "Тип документа",
+              "displayName": "Тип документа",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "Номер документа",
+              "displayName": "Номер документа",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "Контрагент",
+              "displayName": "Контрагент",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "Товар или услуга",
+              "displayName": "Товар или услуга",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "Ед измерения",
+              "displayName": "Ед измерения",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "Количество",
+              "displayName": "Количество",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "Стоимость",
+              "displayName": "Стоимость",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "НДС",
+              "displayName": "НДС",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "Сумма брутто",
+              "displayName": "Сумма брутто",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "Дата оплаты",
+              "displayName": "Дата оплаты",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "Сумма оплаты",
+              "displayName": "Сумма оплаты",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "Счет / Источник",
+              "displayName": "Счет / Источник",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "В бухгалтерию",
+              "displayName": "В бухгалтерию",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "Статус оплаты",
+              "displayName": "Статус оплаты",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "Страна",
+              "displayName": "Страна",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "Ссылка на документ",
+              "displayName": "Ссылка на документ",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "Описание ИИ",
+              "displayName": "Описание ИИ",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            }
           ]
         },
         "options": {}
@@ -263,7 +453,10 @@
       "name": "Append Rows to Target",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.5,
-      "position": [1580, 400],
+      "position": [
+        1800,
+        400
+      ],
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 3000,
@@ -282,7 +475,10 @@
       "name": "Build Confirmation",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1800, 400],
+      "position": [
+        1800,
+        400
+      ],
       "executeOnce": true
     },
     {
@@ -295,7 +491,10 @@
       "name": "Send Telegram",
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
-      "position": [2020, 400],
+      "position": [
+        2020,
+        400
+      ],
       "webhookId": "wf08-send",
       "credentials": {
         "telegramApi": {
@@ -314,7 +513,10 @@
       "name": "Respond to WF-01",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [2240, 400]
+      "position": [
+        2240,
+        400
+      ]
     },
     {
       "parameters": {},
@@ -322,7 +524,10 @@
       "name": "Error Trigger",
       "type": "n8n-nodes-base.errorTrigger",
       "typeVersion": 1,
-      "position": [-400, 660]
+      "position": [
+        -400,
+        660
+      ]
     },
     {
       "parameters": {
@@ -332,7 +537,10 @@
       "name": "Build Error",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [-180, 660]
+      "position": [
+        -180,
+        660
+      ]
     },
     {
       "parameters": {
@@ -346,7 +554,10 @@
       "name": "Send Error",
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
-      "position": [40, 660],
+      "position": [
+        40,
+        660
+      ],
       "webhookId": "wf08-send-err",
       "credentials": {
         "telegramApi": {
@@ -359,46 +570,169 @@
   "pinData": {},
   "connections": {
     "Webhook": {
-      "main": [[{ "node": "Parse Input", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Parse Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Parse Input": {
-      "main": [[{ "node": "Read Source Реестр", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Read Source Реестр",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Read Source Реестр": {
-      "main": [[{ "node": "Collapse 1", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Collapse 1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Collapse 1": {
-      "main": [[{ "node": "Read Source Банк", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Read Source Банк",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Read Source Банк": {
-      "main": [[{ "node": "Collapse 2", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Collapse 2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Collapse 2": {
-      "main": [[{ "node": "Read Target Реестр", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Read Target Реестр",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Read Target Реестр": {
-      "main": [[{ "node": "Build Merged Dataset", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Build Merged Dataset",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Build Merged Dataset": {
-      "main": [[{ "node": "Clear Target Data", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Clear Target Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Clear Target Data": {
-      "main": [[{ "node": "Append Rows to Target", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Restore Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Append Rows to Target": {
-      "main": [[{ "node": "Build Confirmation", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Build Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Build Confirmation": {
-      "main": [[{ "node": "Send Telegram", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Send Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Send Telegram": {
-      "main": [[{ "node": "Respond to WF-01", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Respond to WF-01",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Error Trigger": {
-      "main": [[{ "node": "Build Error", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Build Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Build Error": {
-      "main": [[{ "node": "Send Error", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Send Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore Rows": {
+      "main": [
+        [
+          {
+            "node": "Append Rows to Target",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "active": false,
