@@ -30,6 +30,19 @@
     },
     {
       "parameters": {
+        "jsCode": "// ============================================================\n// WF-05 [2b] Convert RUB → BYN (курс НБРБ на дату документа)\n// Сценарий: счёт выставлен нашим бел. юр. лицом (Квае Лаб) российскому\n// контрагенту в российских рублях. В реестр сумма пишется в BYN по\n// официальному курсу Нацбанка РБ на дату выставления счёта (docDate).\n// Источник курса: https://api.nbrb.by/exrates/rates/RUB?parammode=2&ondate=YYYY-MM-DD\n// ============================================================\n\nfunction toIso(d) {\n  const m = String(d || '').match(/^(\\d{2})\\.(\\d{2})\\.(\\d{4})$/);\n  return m ? `${m[3]}-${m[2]}-${m[1]}` : '';\n}\nfunction toReadable(iso) {\n  const m = String(iso || '').match(/^(\\d{4})-(\\d{2})-(\\d{2})$/);\n  return m ? `${m[3]}.${m[2]}.${m[1]}` : iso;\n}\n\nconst out = [];\nfor (const it of $input.all()) {\n  const j = { ...it.json };\n\n  const currency = String(j.currency || '').toUpperCase();\n  const cp = String(j.counterpartyCountry || '').trim().toLowerCase();\n  const isRuCp = cp.includes('росс') || cp === 'ru' || cp.includes('russia');\n\n  // сумма как абсолютное число\n  let amt = 0;\n  if (typeof j.amount === 'number') amt = j.amount;\n  else if (typeof j.amount === 'string') {\n    amt = parseFloat(j.amount.replace(/[^0-9.,\\-]/g, '').replace(',', '.')) || 0;\n  }\n  amt = Math.abs(amt);\n\n  // --- Проверка: росс. контрагент, но валюта не RUB ---\n  if (isRuCp && currency && currency !== 'RUB') {\n    j.aiDescription = (j.aiDescription ? j.aiDescription + ' ' : '') +\n      `[⚠️ РФ-контрагент, но валюта ${currency}, а не RUB — проверьте документ]`;\n  }\n\n  // --- Конвертация RUB → BYN по курсу НБРБ на дату документа ---\n  if (currency === 'RUB' && amt > 0) {\n    let ondate = toIso(j.docDate);\n    if (!ondate) {\n      const now = new Date();\n      ondate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;\n    }\n    try {\n      const res = await this.helpers.httpRequest({\n        method: 'GET',\n        url: `https://api.nbrb.by/exrates/rates/RUB?parammode=2&ondate=${ondate}`,\n        json: true,\n        timeout: 10000\n      });\n      const rate = Number(res && res.Cur_OfficialRate);\n      const scale = Number(res && res.Cur_Scale) || 1;\n      if (!rate || rate <= 0) throw new Error('НБРБ вернул пустой курс');\n\n      const byn = Math.round((amt * rate / scale) * 100) / 100;\n\n      j._origAmount = amt;\n      j._origCurrency = 'RUB';\n      j._nbrbRate = rate;\n      j._nbrbScale = scale;\n      j._nbrbDate = ondate;\n      j._converted = true;\n\n      j.amount = byn;\n      j.currency = 'BYN';\n\n      j.aiDescription = (j.aiDescription ? j.aiDescription + ' ' : '') +\n        `🔁 Конвертация ${amt.toFixed(2)} RUB → ${byn.toFixed(2)} BYN по курсу НБРБ ${rate} BYN / ${scale} RUB на ${toReadable(ondate)}.`;\n    } catch (e) {\n      j._converted = false;\n      j._convertError = String((e && e.message) || e);\n      j.aiDescription = (j.aiDescription ? j.aiDescription + ' ' : '') +\n        `[⚠️ Не удалось получить курс НБРБ на ${toReadable(ondate)} — сумма оставлена в RUB, нужна ручная конвертация]`;\n    }\n  }\n\n  out.push({ json: j });\n}\n\nreturn out;"
+      },
+      "id": "c01f2b40-0000-4a05-9005-0000000000a1",
+      "name": "Convert RUB to BYN (NBRB)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -6128,
+        2416
+      ]
+    },
+    {
+      "parameters": {
         "documentId": {
           "__rl": true,
           "value": "={{ $env.GOOGLE_SHEETS_ID }}",
@@ -193,7 +206,7 @@
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "// ============================================================\n// WF-05 [3] ID Generator + Row Builder (v2.4)\n// Изменения v2.4: добавлен invoice_number → колонка M реестра\n// ============================================================\n\nconst input = $('Resolve Period').item.json;\n\n// counterRow: либо из Get Counter Row (true-ветка), либо только что создана (false-ветка)\nlet counterRow;\ntry {\n  counterRow = $('Counter Row Exists?').item.json;\n} catch (e) {\n  counterRow = null;\n}\nif (!counterRow || !counterRow['Период']) {\n  counterRow = {\n    'Период': input.periodLabel,\n    'Страна': input.country || 'Беларусь',\n    'Поступления (0.XXXX)': 0,\n    'Выбытия (1.XXXX)': 0\n  };\n}\n\n// --- Тип операции (0 = Поступление, 1 = Выбытие) ---\nconst typeCode = input.status === 'Поступление' ? 0 : 1;\nconst counterKey = typeCode === 0 ? 'Поступления (0.XXXX)' : 'Выбытия (1.XXXX)';\n\n// --- Инкремент счётчика ---\nconst currentCount = parseInt(counterRow[counterKey] || '0', 10) || 0;\nconst newCount = currentCount + 1;\nconst nrId = `${typeCode}.${String(newCount).padStart(4, '0')}`;\n\n// --- UUID v4 ---\nconst uuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {\n  const r = Math.random() * 16 | 0;\n  const v = c === 'x' ? r : (r & 0x3 | 0x8);\n  return v.toString(16);\n});\n\n// --- Обновлённые значения счётчиков ---\nconst newIncome  = typeCode === 0 ? newCount : parseInt(counterRow['Поступления (0.XXXX)'] || '0', 10);\nconst newOutcome = typeCode === 1 ? newCount : parseInt(counterRow['Выбытия (1.XXXX)']     || '0', 10);\n\n// --- Обработка суммы (v2.3) ---\nconst rawAmt = input.amount;\nlet absAmount = 0;\nif (typeof rawAmt === 'number') {\n  absAmount = Math.abs(rawAmt);\n} else if (typeof rawAmt === 'string' && rawAmt.trim()) {\n  const parsed = parseFloat(rawAmt.replace(/[^0-9.,\\-]/g, '').replace(',', '.'));\n  absAmount = Math.abs(isNaN(parsed) ? 0 : parsed);\n}\n\nconst signedAmount = typeCode === 0 ? absAmount : -absAmount;\nconst currency = String(input.currency || '').toUpperCase();\n\n// === v2.4: invoice_number ===\nconst invoiceNumber = String(input.invoice_number || '').trim();\n\n// --- Сборка строки реестра (A–M видимые + L скрытый UUID) ---\nconst row = {\n  'Nr ID':              nrId,\n  'Статус':             input.status || '',\n  'Дата документа':     input.docDate || '',\n  'Контрагент':         input.counterparty || '',\n  'Дата оплаты':        input.payDate || '',\n  'Сумма':              signedAmount,\n  'Валюта':             currency,\n  'Статус оплаты':      input.payStatus || '',\n  'Страна':             input.country || 'Беларусь',\n  'Ссылка на документ': input.driveUrl || '',\n  'Описание AI':        input.aiDescription || '',\n  'UUID':               uuid,\n  'Номер инвойса':      invoiceNumber\n};\n\nreturn {\n  json: {\n    ...input,\n    nrId,\n    uuid,\n    invoiceNumber,\n    typeCode,\n    counterKey,\n    newCount,\n    newIncome,\n    newOutcome,\n    signedAmount,\n    currency,\n    registryRow: row\n  }\n};\n"
+        "jsCode": "// ============================================================\n// WF-05 [3] ID Generator + Row Builder (v2.4)\n// Изменения v2.4: добавлен invoice_number → колонка M реестра\n// ============================================================\n\nconst input = $('Convert RUB to BYN (NBRB)').item.json;\n\n// counterRow: либо из Get Counter Row (true-ветка), либо только что создана (false-ветка)\nlet counterRow;\ntry {\n  counterRow = $('Counter Row Exists?').item.json;\n} catch (e) {\n  counterRow = null;\n}\nif (!counterRow || !counterRow['Период']) {\n  counterRow = {\n    'Период': input.periodLabel,\n    'Страна': input.country || 'Беларусь',\n    'Поступления (0.XXXX)': 0,\n    'Выбытия (1.XXXX)': 0\n  };\n}\n\n// --- Тип операции (0 = Поступление, 1 = Выбытие) ---\nconst typeCode = input.status === 'Поступление' ? 0 : 1;\nconst counterKey = typeCode === 0 ? 'Поступления (0.XXXX)' : 'Выбытия (1.XXXX)';\n\n// --- Инкремент счётчика ---\nconst currentCount = parseInt(counterRow[counterKey] || '0', 10) || 0;\nconst newCount = currentCount + 1;\nconst nrId = `${typeCode}.${String(newCount).padStart(4, '0')}`;\n\n// --- UUID v4 ---\nconst uuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {\n  const r = Math.random() * 16 | 0;\n  const v = c === 'x' ? r : (r & 0x3 | 0x8);\n  return v.toString(16);\n});\n\n// --- Обновлённые значения счётчиков ---\nconst newIncome  = typeCode === 0 ? newCount : parseInt(counterRow['Поступления (0.XXXX)'] || '0', 10);\nconst newOutcome = typeCode === 1 ? newCount : parseInt(counterRow['Выбытия (1.XXXX)']     || '0', 10);\n\n// --- Обработка суммы (v2.3) ---\nconst rawAmt = input.amount;\nlet absAmount = 0;\nif (typeof rawAmt === 'number') {\n  absAmount = Math.abs(rawAmt);\n} else if (typeof rawAmt === 'string' && rawAmt.trim()) {\n  const parsed = parseFloat(rawAmt.replace(/[^0-9.,\\-]/g, '').replace(',', '.'));\n  absAmount = Math.abs(isNaN(parsed) ? 0 : parsed);\n}\n\nconst signedAmount = typeCode === 0 ? absAmount : -absAmount;\nconst currency = String(input.currency || '').toUpperCase();\n\n// === Оригинальная сумма в RUB (если была конвертация RUB→BYN) ===\nconst origRub = (input._converted && input._origCurrency === 'RUB' && (Number(input._origAmount) || 0) > 0)\n  ? (typeCode === 0 ? Math.abs(Number(input._origAmount)) : -Math.abs(Number(input._origAmount)))\n  : '';\n\n// === v2.4: invoice_number ===\nconst invoiceNumber = String(input.invoice_number || '').trim();\n\n// --- Сборка строки реестра (A–M видимые + L скрытый UUID) ---\nconst row = {\n  'Nr ID':              nrId,\n  'Статус':             input.status || '',\n  'Дата документа':     input.docDate || '',\n  'Контрагент':         input.counterparty || '',\n  'Дата оплаты':        input.payDate || '',\n  'Сумма':              signedAmount,\n  'Валюта':             currency,\n  'Сумма в RUB (оригинал)': origRub,\n  'Статус оплаты':      input.payStatus || '',\n  'Страна':             input.country || 'Беларусь',\n  'Ссылка на документ': input.driveUrl || '',\n  'Описание AI':        input.aiDescription || '',\n  'UUID':               uuid,\n  'Номер инвойса':      invoiceNumber\n};\n\nreturn {\n  json: {\n    ...input,\n    nrId,\n    uuid,\n    invoiceNumber,\n    typeCode,\n    counterKey,\n    newCount,\n    newIncome,\n    newOutcome,\n    signedAmount,\n    currency,\n    registryRow: row\n  }\n};\n"
       },
       "id": "392f68e6-72e7-4b20-8f4e-a4f7f93b8d5a",
       "name": "Generate Nr ID & Build Row",
@@ -227,6 +240,7 @@
             "Дата оплаты": "={{ $json.registryRow['Дата оплаты'] }}",
             "Сумма": "={{ $json.registryRow['Сумма'] }}",
             "Валюта": "={{ $json.registryRow['Валюта'] }}",
+            "Сумма в RUB (оригинал)": "={{ $json.registryRow['Сумма в RUB (оригинал)'] }}",
             "Статус оплаты": "={{ $json.registryRow['Статус оплаты'] }}",
             "Страна": "={{ $json.registryRow['Страна'] }}",
             "Ссылка на документ": "={{ $json.registryRow['Ссылка на документ'] }}",
@@ -297,6 +311,15 @@
               "defaultMatch": false,
               "display": true,
               "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Сумма в RUB (оригинал)",
+              "displayName": "Сумма в RUB (оригинал)",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
               "canBeUsedToMatch": false
             },
             {
@@ -491,7 +514,7 @@
       "main": [
         [
           {
-            "node": "Get Counter Row",
+            "node": "Convert RUB to BYN (NBRB)",
             "type": "main",
             "index": 0
           }
@@ -565,6 +588,17 @@
         [
           {
             "node": "Build Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert RUB to BYN (NBRB)": {
+      "main": [
+        [
+          {
+            "node": "Get Counter Row",
             "type": "main",
             "index": 0
           }
