@@ -19,7 +19,7 @@
     },
     {
       "parameters": {
-        "content": "### ⚠️ DOCX и Gemini\n\nGemini Files API поддерживает PDF нативно, но **DOCX напрямую не поддерживается**.\n\nЕсли при тестировании DOCX (Приорбанк BY) даёт пустой ответ или ошибку — добавь перед нодой **Gemini Vision** ноду **Extract from File** (или конвертер DOCX→PDF) и передай извлечённый текст в **Gemini Text** вместо Vision.\n\nДля MVP пробуем сначала бинарный путь — n8n langchain-нода может отправить DOCX как inlineData; в части кейсов Gemini корректно его обрабатывает.\n\nPDF (PKO Bank PL) работает через Vision стабильно.",
+        "content": "### Форматы выписок и Gemini\n\nGemini напрямую читает: **PDF, CSV (text/csv), TXT (text/plain), JPEG, PNG**. Эти форматы идут в Gemini Vision как есть.\n\n**DOCX Gemini НЕ поддерживает** (ошибка 400 Unsupported MIME type). Поэтому DOCX конвертируется в PDF через Google Drive:\n\n`Is DOCX?` → **Drive Upload DOCX** (uploadType=media) → **Drive Convert to GDoc** (files.copy → Google Doc) → **Drive Export PDF** → **Prep PDF** → Gemini Vision.\n\nВременные файлы в Drive удаляются нодами **Delete Temp GDoc/DOCX** (continueOnFail — сбой очистки не ломает парсинг).\n\n**Требуется:** credential `Google Drive account` (googleDriveOAuth2Api) на 4 Drive-нодах. Если files.copy не конвертирует — fallback: загружать через uploadType=multipart с metadata mimeType.",
         "height": 380,
         "width": 420,
         "color": 3
@@ -68,7 +68,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// === WF-06 [1] Input Validator ===\n// Принимаем как Webhook ($json.body), так и Execute Workflow ($json напрямую)\nconst raw = $input.first().json;\nconst input = raw.body || raw;\n\nlet chatId = input.chatId || input.chat_id || input.chatID;\nif (chatId !== undefined && chatId !== null) chatId = String(chatId).trim();\n\nif (!chatId) {\n  return [{ json: {\n    chatId: '',\n    isError: true,\n    _route: 1,\n    errorText: '\\u26A0\\uFE0F WF-06: chatId отсутствует в запросе.'\n  }}];\n}\n\nconst type = String(input.type || '').toLowerCase().trim();\nconst fileId = String(input.file_id || '').trim();\nconst mime = String(input.mime_type || '').trim();\nconst fileSize = Number(input.file_size || 0);\n\n// Принимаем только document (PDF/DOCX). photo/voice/text для выписки не подходят.\nif (type !== 'document') {\n  return [{ json: {\n    chatId, isError: true, _route: 1,\n    errorText: '\\u26A0\\uFE0F Для выписки нужен файл PDF или DOCX. Фото и голос не поддерживаются.\\n\\nОтправьте /vpsk заново и приложите файл выписки.'\n  }}];\n}\n\nif (!fileId) {\n  return [{ json: {\n    chatId, isError: true, _route: 1,\n    errorText: '\\u26A0\\uFE0F Файл не получен. Попробуйте /vpsk снова.'\n  }}];\n}\n\n// Лимит Telegram bot — 20 МБ\nif (fileSize && fileSize > 20 * 1024 * 1024) {\n  return [{ json: {\n    chatId, isError: true, _route: 1,\n    errorText: '\\u26A0\\uFE0F Файл слишком большой (макс 20 МБ). Telegram Bot API имеет ограничение.'\n  }}];\n}\n\nreturn [{ json: {\n  chatId,\n  type,\n  file_id: fileId,\n  mime_type: mime,\n  file_size: fileSize,\n  isError: false,\n  _route: 0\n}}];"
+        "jsCode": "// === WF-06 [1] Input Validator ===\n// Принимаем как Webhook ($json.body), так и Execute Workflow ($json напрямую)\nconst raw = $input.first().json;\nconst input = raw.body || raw;\n\nlet chatId = input.chatId || input.chat_id || input.chatID;\nif (chatId !== undefined && chatId !== null) chatId = String(chatId).trim();\n\nif (!chatId) {\n  return [{ json: {\n    chatId: '',\n    isError: true,\n    _route: 1,\n    errorText: '\\u26A0\\uFE0F WF-06: chatId отсутствует в запросе.'\n  }}];\n}\n\nconst type = String(input.type || '').toLowerCase().trim();\nconst fileId = String(input.file_id || '').trim();\nconst mime = String(input.mime_type || '').trim();\nconst fileSize = Number(input.file_size || 0);\n\n// Принимаем только document (PDF/DOCX). photo/voice/text для выписки не подходят.\nif (type !== 'document') {\n  return [{ json: {\n    chatId, isError: true, _route: 1,\n    errorText: '\\u26A0\\uFE0F Для выписки нужен файл PDF, DOCX, CSV или TXT. Фото и голос не поддерживаются.\\n\\nОтправьте /vpsk заново и приложите файл выписки.'\n  }}];\n}\n\nif (!fileId) {\n  return [{ json: {\n    chatId, isError: true, _route: 1,\n    errorText: '\\u26A0\\uFE0F Файл не получен. Попробуйте /vpsk снова.'\n  }}];\n}\n\n// Лимит Telegram bot — 20 МБ\nif (fileSize && fileSize > 20 * 1024 * 1024) {\n  return [{ json: {\n    chatId, isError: true, _route: 1,\n    errorText: '\\u26A0\\uFE0F Файл слишком большой (макс 20 МБ). Telegram Bot API имеет ограничение.'\n  }}];\n}\n\nreturn [{ json: {\n  chatId,\n  type,\n  file_id: fileId,\n  mime_type: mime,\n  file_size: fileSize,\n  isError: false,\n  _route: 0\n}}];"
       },
       "id": "186cb0be-73e6-4719-9828-de826109ebdf",
       "name": "Input Validator",
@@ -149,7 +149,7 @@
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "// === WF-06 [2] Fix MIME — выписки (PDF / DOCX / JPEG / PNG) ===\n// Telegram присылает .docx / .pdf обычно с правильным mime_type, но иногда\n// application/octet-stream — поэтому делаем полную нормализацию (NFR-11).\n\nconst item = $input.item;\nif (!item.binary || !item.binary.data) {\n  throw new Error('WF-06 Fix MIME: no binary data on input item');\n}\n\n// 1) Сначала смотрим на mime, который пришёл от Telegram через WF-01\nlet tgMime = '';\ntry {\n  tgMime = String($('Input Validator').first().json.mime_type || '').toLowerCase();\n} catch (e) { tgMime = ''; }\n\n// 2) Расширение файла\nconst fileName = item.binary.data.fileName || '';\nconst ext = (fileName.split('.').pop() || '').toLowerCase();\nconst extMap = {\n  'pdf':  'application/pdf',\n  'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',\n  'jpg':  'image/jpeg',\n  'jpeg': 'image/jpeg',\n  'png':  'image/png',\n  'webp': 'image/webp'\n};\n\nlet finalMime = (tgMime && tgMime !== 'application/octet-stream') ? tgMime : (extMap[ext] || '');\n\n// 3) Magic bytes — последний рубеж\nif (!finalMime || finalMime === 'application/octet-stream') {\n  const buf = Buffer.from(item.binary.data.data, 'base64');\n  if (buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46) {\n    finalMime = 'application/pdf';                    // %PDF\n  } else if (buf[0] === 0x50 && buf[1] === 0x4B && buf[2] === 0x03 && buf[3] === 0x04) {\n    finalMime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';\n  } else if (buf[0] === 0xFF && buf[1] === 0xD8) {\n    finalMime = 'image/jpeg';\n  } else if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) {\n    finalMime = 'image/png';\n  } else {\n    throw new Error(`WF-06: cannot determine MIME. File: ${fileName}, bytes: ${buf.slice(0, 8).toString('hex')}`);\n  }\n}\n\n// 4) Допустимые типы для выписок\nconst allowed = [\n  'application/pdf',\n  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',\n  'image/jpeg', 'image/png'\n];\nif (!allowed.includes(finalMime)) {\n  throw new Error(`WF-06: unsupported MIME for statement: ${finalMime}. Поддерживается: PDF, DOCX, JPEG, PNG.`);\n}\n\n// 5) Перезаписываем\nitem.binary.data.mimeType = finalMime;\nitem.binary.data.fileType = finalMime.split('/')[0];\n\n// Прокидываем поля из Input Validator в json\nconst v = $('Input Validator').first().json;\nitem.json = {\n  ...item.json,\n  chatId: v.chatId,\n  _detectedMime: finalMime,\n  _origFileName: fileName\n};\n\nreturn item;"
+        "jsCode": "// === WF-06 [2] Fix MIME — выписки (PDF / DOCX / CSV / TXT / JPEG / PNG) ===\n// Telegram присылает .docx / .pdf / .csv / .txt обычно с правильным mime_type,\n// но иногда application/octet-stream — поэтому делаем полную нормализацию (NFR-11).\n//\n// Gemini читает напрямую: PDF, CSV (text/csv), TXT (text/plain), JPEG, PNG.\n// DOCX Gemini НЕ поддерживает → помечаем _isDocx=true, далее нода-роутер\n// 'Is DOCX?' направит его на конвертацию DOCX→PDF через Google Drive.\n\nconst item = $input.item;\nif (!item.binary || !item.binary.data) {\n  throw new Error('WF-06 Fix MIME: no binary data on input item');\n}\n\nconst DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';\n\n// 1) Сначала смотрим на mime, который пришёл от Telegram через WF-01\nlet tgMime = '';\ntry {\n  tgMime = String($('Input Validator').first().json.mime_type || '').toLowerCase();\n} catch (e) { tgMime = ''; }\n\n// Telegram иногда шлёт нестандартные text/* (text/comma-separated-values и т.п.)\nfunction normalizeTgMime(m) {\n  if (!m) return '';\n  if (m.includes('csv') || m.includes('comma-separated')) return 'text/csv';\n  if (m === 'text/plain' || m.startsWith('text/plain')) return 'text/plain';\n  return m;\n}\n\n// 2) Расширение файла\nconst fileName = item.binary.data.fileName || '';\nconst ext = (fileName.split('.').pop() || '').toLowerCase();\nconst extMap = {\n  'pdf':  'application/pdf',\n  'docx': DOCX,\n  'csv':  'text/csv',\n  'txt':  'text/plain',\n  'jpg':  'image/jpeg',\n  'jpeg': 'image/jpeg',\n  'png':  'image/png',\n  'webp': 'image/webp'\n};\n\nlet finalMime = (tgMime && tgMime !== 'application/octet-stream')\n  ? normalizeTgMime(tgMime)\n  : (extMap[ext] || '');\n\n// 3) Magic bytes + текстовый фолбэк — последний рубеж\nif (!finalMime || finalMime === 'application/octet-stream') {\n  const buf = Buffer.from(item.binary.data.data, 'base64');\n  if (buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46) {\n    finalMime = 'application/pdf';                    // %PDF\n  } else if (buf[0] === 0x50 && buf[1] === 0x4B && buf[2] === 0x03 && buf[3] === 0x04) {\n    finalMime = DOCX;                                 // PK.. zip → docx\n  } else if (buf[0] === 0xFF && buf[1] === 0xD8) {\n    finalMime = 'image/jpeg';\n  } else if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) {\n    finalMime = 'image/png';\n  } else if (extMap[ext]) {\n    finalMime = extMap[ext];                          // csv/txt по расширению\n  } else {\n    // Нет null-байтов в первых 512 → считаем текстом (csv/txt без расширения)\n    const sample = buf.slice(0, 512);\n    if (!sample.includes(0x00)) {\n      finalMime = 'text/plain';\n    } else {\n      throw new Error(`WF-06: cannot determine MIME. File: ${fileName}, bytes: ${buf.slice(0, 8).toString('hex')}`);\n    }\n  }\n}\n\n// 4) Допустимые типы для выписок\nconst allowed = [\n  'application/pdf',\n  DOCX,\n  'text/csv', 'text/plain',\n  'image/jpeg', 'image/png'\n];\nif (!allowed.includes(finalMime)) {\n  throw new Error(`WF-06: unsupported MIME for statement: ${finalMime}. Поддерживается: PDF, DOCX, CSV, TXT, JPEG, PNG.`);\n}\n\n// 5) Перезаписываем\nitem.binary.data.mimeType = finalMime;\nitem.binary.data.fileType = finalMime.split('/')[0];\n\n// Прокидываем поля из Input Validator в json\nconst v = $('Input Validator').first().json;\nitem.json = {\n  ...item.json,\n  chatId: v.chatId,\n  _detectedMime: finalMime,\n  _isDocx: finalMime === DOCX,\n  _origFileName: fileName\n};\n\nreturn item;"
       },
       "id": "6cfd7855-fcc5-4b74-871c-a83df4810f0d",
       "name": "Fix MIME",
@@ -159,6 +159,193 @@
         -5232,
         2960
       ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-is-docx",
+              "leftValue": "={{ $json._isDocx }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "f6a10001-0000-4a01-9001-0000000000d1",
+      "name": "Is DOCX?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -5120,
+        2960
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://www.googleapis.com/upload/drive/v3/files?uploadType=media",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDriveOAuth2Api",
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "data",
+        "options": {}
+      },
+      "id": "f6a10002-0000-4a01-9001-0000000000d2",
+      "name": "Drive Upload DOCX",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -5232,
+        2680
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "S9QNJad2kfoTbu9F",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://www.googleapis.com/drive/v3/files/{{ $json.id }}/copy",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDriveOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"name\": \"wf06-tmp-statement\",\n  \"mimeType\": \"application/vnd.google-apps.document\"\n}",
+        "options": {}
+      },
+      "id": "f6a10003-0000-4a01-9001-0000000000d3",
+      "name": "Drive Convert to GDoc",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -5008,
+        2680
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "S9QNJad2kfoTbu9F",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://www.googleapis.com/drive/v3/files/{{ $json.id }}/export?mimeType=application%2Fpdf",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDriveOAuth2Api",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      },
+      "id": "f6a10004-0000-4a01-9001-0000000000d4",
+      "name": "Drive Export PDF",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -4784,
+        2680
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "S9QNJad2kfoTbu9F",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// === WF-06 [2b] Prep PDF for Gemini — после конвертации DOCX\\u2192PDF ===\n// Drive export вернул PDF в binary.data. Проставляем mimeType=application/pdf\n// и восстанавливаем chatId, чтобы ветка слилась обратно в Gemini Vision.\n\nconst item = $input.item;\nif (!item.binary || !item.binary.data) {\n  throw new Error('WF-06 Prep PDF: no PDF binary after Drive export');\n}\n\nitem.binary.data.mimeType = 'application/pdf';\nitem.binary.data.fileName = 'statement.pdf';\nitem.binary.data.fileType = 'application';\n\nconst v = $('Input Validator').first().json;\nitem.json = {\n  chatId: v.chatId,\n  _detectedMime: 'application/pdf',\n  _convertedFromDocx: true\n};\n\nreturn item;"
+      },
+      "id": "f6a10005-0000-4a01-9001-0000000000d5",
+      "name": "Prep PDF for Gemini",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -4784,
+        2860
+      ]
+    },
+    {
+      "parameters": {
+        "method": "DELETE",
+        "url": "=https://www.googleapis.com/drive/v3/files/{{ $('Drive Convert to GDoc').item.json.id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDriveOAuth2Api",
+        "options": {}
+      },
+      "id": "f6a10006-0000-4a01-9001-0000000000d6",
+      "name": "Delete Temp GDoc",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -4560,
+        2680
+      ],
+      "continueOnFail": true,
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "S9QNJad2kfoTbu9F",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "DELETE",
+        "url": "=https://www.googleapis.com/drive/v3/files/{{ $('Drive Upload DOCX').item.json.id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDriveOAuth2Api",
+        "options": {}
+      },
+      "id": "f6a10007-0000-4a01-9001-0000000000d7",
+      "name": "Delete Temp DOCX",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -4336,
+        2680
+      ],
+      "continueOnFail": true,
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "S9QNJad2kfoTbu9F",
+          "name": "Google Drive account"
+        }
+      }
     },
     {
       "parameters": {
@@ -632,7 +819,85 @@
       "main": [
         [
           {
+            "node": "Is DOCX?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is DOCX?": {
+      "main": [
+        [
+          {
+            "node": "Drive Upload DOCX",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
             "node": "Gemini Vision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Drive Upload DOCX": {
+      "main": [
+        [
+          {
+            "node": "Drive Convert to GDoc",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Drive Convert to GDoc": {
+      "main": [
+        [
+          {
+            "node": "Drive Export PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Drive Export PDF": {
+      "main": [
+        [
+          {
+            "node": "Prep PDF for Gemini",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Delete Temp GDoc",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prep PDF for Gemini": {
+      "main": [
+        [
+          {
+            "node": "Gemini Vision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete Temp GDoc": {
+      "main": [
+        [
+          {
+            "node": "Delete Temp DOCX",
             "type": "main",
             "index": 0
           }

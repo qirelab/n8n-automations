@@ -46,7 +46,8 @@
       "parameters": {
         "resource": "fileFolder",
         "queryString": "={{ $json.yearMonth }}",
-        "returnAll": true,
+        "returnAll": false,
+        "limit": 1,
         "filter": {
           "folderId": {
             "__rl": true,
@@ -156,7 +157,8 @@
       "parameters": {
         "resource": "fileFolder",
         "queryString": "={{ $('Generate Filename').item.json.subFolder }}",
-        "returnAll": true,
+        "returnAll": false,
+        "limit": 1,
         "filter": {
           "folderId": {
             "__rl": true,
