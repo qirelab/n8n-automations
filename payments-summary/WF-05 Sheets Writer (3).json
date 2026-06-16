@@ -100,7 +100,7 @@
           "conditions": [
             {
               "id": "cond-counter-exists",
-              "leftValue": "={{ $json.Период }}",
+              "leftValue": "={{ ($json.Период ?? '').toString() }}",
               "rightValue": "",
               "operator": {
                 "type": "string",
