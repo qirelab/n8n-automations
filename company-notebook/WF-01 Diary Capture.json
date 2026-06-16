@@ -235,7 +235,7 @@
     {
       "parameters": {
         "chatId": "={{ $('Telegram Trigger (Voice)').item.json.message.chat.id }}",
-        "text": "=❌ Не удалось сохранить запись дневника.\n\n*Шаг:* {{ $json.node?.name || $node?.name || 'неизвестный' }}\n*Ошибка:* {{ $json.error?.message || $json.error?.description || $json.error || 'неизвестная ошибка' }}",
+        "text": "=❌ Не удалось сохранить запись дневника.\n\n*Шаг:* {{ $json.error?.node?.name || $json.node?.name || 'неизвестный' }}\n*Ошибка:* {{ $json.error?.message || $json.error?.description || ($json.error ? (typeof $json.error === 'string' ? $json.error : JSON.stringify($json.error)) : 'неизвестная ошибка') }}",
         "additionalFields": {
           "parse_mode": "Markdown"
         }
