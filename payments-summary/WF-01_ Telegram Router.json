@@ -26,7 +26,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// === WHITELIST + ROUTER (v2) ===\n// Правка аудита: photo mime_type не хардкодим в image/jpeg — Telegram может\n// прислать PNG-фото тоже; реальная MIME-нормализация делается в WF-02/03.\nconst allowed = ($env.TELEGRAM_ADMIN_CHAT_ID || '').split(',').map(id => id.trim());\nconst msg = $input.first().json.message || {};\nconst chatId = String(msg.chat?.id || '');\n\nif (!chatId || !allowed.includes(chatId)) {\n  return [];\n}\n\nlet outputIndex = 3;\nlet payload = { chatId };\n\nif (msg.photo && msg.photo.length > 0) {\n  outputIndex = 0;\n  payload.type = 'photo';\n  payload.file_id = msg.photo[msg.photo.length - 1].file_id;\n  payload.mime_type = 'image/jpeg'; // Telegram сжимает фото в JPEG, но WF-02/03 всё равно нормализует MIME по magic-bytes\n} else if (msg.document) {\n  const mime = msg.document.mime_type || 'application/octet-stream';\n  // Пропускаем любой документ — WF-02/03 сам выполнит MIME-нормализацию (NFR-11)\n  outputIndex = 0;\n  payload.type = 'document';\n  payload.file_id = msg.document.file_id;\n  payload.mime_type = mime;\n  payload.file_size = msg.document.file_size || 0;\n} else if (msg.voice) {\n  outputIndex = 0;\n  payload.type = 'voice';\n  payload.file_id = msg.voice.file_id;\n} else if (msg.text && msg.text.startsWith('/')) {\n  outputIndex = 1;\n  payload.text = msg.text;\n} else if (msg.text) {\n  outputIndex = 0;\n  payload.type = 'text';\n  payload.text = msg.text;\n}\n\npayload.outputIndex = outputIndex;\nreturn [{ json: payload }];"
+        "jsCode": "// === WHITELIST + ROUTER (v3) ===\n// v3: текст persistent reply-keyboard кнопок маппим в соответствующие slash-команды\n//     ДО анализа msg.text — чтобы тап по кнопке вёл по тому же маршруту, что\n//     ручной ввод /vpsk, /clear и т.д. Меню (текст кнопок) — в Send Command Reply.\n\nconst BUTTON_TO_CMD = {\n  '\\uD83D\\uDCE5 Загрузить выписку':         '/vpsk',\n  '\\uD83D\\uDD04 Сверить с банком':          '/reconcile',\n  '\\uD83D\\uDCCA Сводный реестр':            '/update',\n  '\\u2753 Незакрытые позиции':              '/missing',\n  '\\uD83D\\uDCC4 Последние записи':          '/status',\n  '\\uD83D\\uDD17 Ссылка на отчёт':           '/report',\n  '\\uD83D\\uDDD1\\uFE0F Очистить лист Банк':  '/clear',\n  '\\u2139 Помощь':                          '/help'\n};\n\nconst allowed = ($env.TELEGRAM_ADMIN_CHAT_ID || '').split(',').map(id => id.trim());\nconst msg = $input.first().json.message || {};\nconst chatId = String(msg.chat?.id || '');\n\nif (!chatId || !allowed.includes(chatId)) {\n  return [];\n}\n\n// Если пришёл текст кнопки persistent-keyboard — превращаем его в slash-команду.\nlet textForRouting = msg.text;\nif (textForRouting) {\n  const mapped = BUTTON_TO_CMD[textForRouting.trim()];\n  if (mapped) textForRouting = mapped;\n}\n\nlet outputIndex = 3;\nlet payload = { chatId };\n\nif (msg.photo && msg.photo.length > 0) {\n  outputIndex = 0;\n  payload.type = 'photo';\n  payload.file_id = msg.photo[msg.photo.length - 1].file_id;\n  payload.mime_type = 'image/jpeg'; // Telegram сжимает фото в JPEG, но WF-02/03 всё равно нормализует MIME по magic-bytes\n} else if (msg.document) {\n  const mime = msg.document.mime_type || 'application/octet-stream';\n  // Пропускаем любой документ — WF-02/03 сам выполнит MIME-нормализацию (NFR-11)\n  outputIndex = 0;\n  payload.type = 'document';\n  payload.file_id = msg.document.file_id;\n  payload.mime_type = mime;\n  payload.file_size = msg.document.file_size || 0;\n} else if (msg.voice) {\n  outputIndex = 0;\n  payload.type = 'voice';\n  payload.file_id = msg.voice.file_id;\n} else if (textForRouting && textForRouting.startsWith('/')) {\n  outputIndex = 1;\n  payload.text = textForRouting;\n} else if (textForRouting) {\n  outputIndex = 0;\n  payload.type = 'text';\n  payload.text = textForRouting;\n}\n\npayload.outputIndex = outputIndex;\nreturn [{ json: payload }];"
       },
       "id": "9c9b4331-0ffc-4278-8b15-92502eca8861",
       "name": "Whitelist + Router",
@@ -124,7 +124,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// === COMMAND HANDLER v2.3 ===\n// /vpsk       → routeTo: 'wf06-stmt'  (запрашиваем выписку)\n// /reconcile  → routeTo: 'wf07'       (сверка BY + PL)\n// /missing    → routeTo: 'wf07-misc'  (незакрытые позиции)\n// /report     → routeTo: 'wf07-misc'  (последний отчёт)\n// остальные   → routeTo: 'local'      (текстовый ответ прямо здесь)\n\nconst chatId = $input.first().json.chatId;\nconst text   = $input.first().json.text || '';\nconst parts  = text.trim().split(/\\s+/);\nconst cmd    = parts[0].toLowerCase().replace(/@\\w+/, '');\nconst args   = parts.slice(1);\n\n// /vpsk\nif (cmd === '/vpsk') {\n  return [{ json: {\n    chatId,\n    routeTo: 'wf06-stmt',\n    reply: '\\uD83D\\uDCCE Пришлите выписку банка.\\n\\n'         + 'Форматы: PDF, DOCX, CSV, TXT.\\n\\n'         + 'Поддерживаются:\\n'         + '\\uD83C\\uDDE7\\uD83C\\uDDFE Приорбанк BY\\n'         + '\\uD83C\\uDDF5\\uD83C\\uDDF1 PKO Bank Polski PL\\n\\n'         + 'Сессия действует 10 минут.'\n  }}];\n}\n\n// /reconcile → WF-07\nif (cmd === '/reconcile') {\n  let period = '';\n  const p = args[0] || '';\n  if (/^\\d{4}-\\d{2}$/.test(p)) period = p;\n  return [{ json: { chatId, routeTo: 'wf07', period, mode: 'reconcile', reply: '' } }];\n}\n\n// /missing → WF-07\nif (cmd === '/missing') {\n  return [{ json: { chatId, routeTo: 'wf07-misc', mode: 'missing', reply: '' } }];\n}\n\n// /report → WF-07\nif (cmd === '/report') {\n  return [{ json: { chatId, routeTo: 'wf07-misc', mode: 'report', reply: '' } }];\n}\n\n// /update → WF-08 (объединение Реестр + Банк в общий документ)\nif (cmd === '/update') {\n  return [{ json: { chatId, routeTo: 'wf08', reply: '' } }];\n}\n\n// Локальные ответы\nconst replies = {\n  '/start':  '\\uD83D\\uDC4B Привет!\\n\\nОтправьте PDF, фото документа, голосовое или текст о платеже — я запишу в реестр.\\n\\n/help — справка',\n  '/help':   '\\uD83D\\uDCD6 Команды:\\n/status — последние записи\\n/settings — настройки\\n/vpsk — загрузить выписку банка\\n/reconcile [YYYY-MM] — сверка (BY + PL)\\n/missing — незакрытые позиции\\n/report — последний отчёт\\n/update — обновить объединённый Реестр (Реестр + Банк)\\n/cancel — отмена',\n  '/cancel': '\\u2705 Отменено.',\n  '/status': '\\uD83D\\uDCCB Последние записи — в листе Реестр.'\n};\n\nlet reply = replies[cmd];\n\nif (!reply && cmd === '/settings') {\n  const sub = args.join(' ');\n  if (!sub)                           reply = '\\u2699\\uFE0F Настройки:\\n/settings recipients list\\n/settings recipients add @user\\n/settings recipients remove @user\\n/settings schedule show';\n  else if (sub === 'recipients list') reply = '\\uD83D\\uDCCB Получатели: откройте лист «Получатели» в Google Sheets.';\n  else if (sub.startsWith('recipients add'))    reply = '\\u2705 Добавьте строку в лист «Получатели»: chat_id | username | owner/accountant | TRUE';\n  else if (sub.startsWith('recipients remove')) reply = '\\u2705 Поставьте active=FALSE в листе «Получатели».';\n  else if (sub === 'schedule show')   reply = '\\uD83D\\uDD50 Сверка: 1-е число, 09:00 UTC+3 (Europe/Minsk)';\n  else                                reply = `\\u2753 Неизвестная подкоманда: ${sub}`;\n}\n\nif (!reply) reply = `\\u2753 Неизвестная команда: ${cmd}`;\n\nreturn [{ json: { chatId, routeTo: 'local', reply } }];\n"
+        "jsCode": "// === COMMAND HANDLER v2.4 ===\n// /vpsk       → routeTo: 'wf06-stmt'  (запрашиваем выписку)\n// /reconcile  → routeTo: 'wf07'       (сверка BY + PL)\n// /missing    → routeTo: 'wf07-misc'  (незакрытые позиции)\n// /report     → routeTo: 'wf07-misc'  (последний отчёт)\n// /update     → routeTo: 'wf08'       (объединение Реестр + Банк)\n// /clear      → routeTo: 'wf01-clear' (очистка листа «Банк»)  ← v2.4\n// остальные   → routeTo: 'local'      (текстовый ответ прямо здесь)\n\nconst chatId = $input.first().json.chatId;\nconst text   = $input.first().json.text || '';\nconst parts  = text.trim().split(/\\s+/);\nconst cmd    = parts[0].toLowerCase().replace(/@\\w+/, '');\nconst args   = parts.slice(1);\n\n// /vpsk\nif (cmd === '/vpsk') {\n  return [{ json: {\n    chatId,\n    routeTo: 'wf06-stmt',\n    reply: '\\uD83D\\uDCCE Пришлите выписку банка.\\n\\n'         + 'Форматы: PDF, DOCX, CSV, TXT.\\n\\n'         + 'Поддерживаются:\\n'         + '\\uD83C\\uDDE7\\uD83C\\uDDFE Приорбанк BY\\n'         + '\\uD83C\\uDDF5\\uD83C\\uDDF1 PKO Bank Polski PL\\n\\n'         + 'Можно загружать выписку несколько раз — новые транзакции будут добавлены к существующим (дубли отсеиваются). Полная очистка — /clear.\\n\\n'         + 'Сессия действует 10 минут.'\n  }}];\n}\n\n// /reconcile → WF-07\nif (cmd === '/reconcile') {\n  let period = '';\n  const p = args[0] || '';\n  if (/^\\d{4}-\\d{2}$/.test(p)) period = p;\n  return [{ json: { chatId, routeTo: 'wf07', period, mode: 'reconcile', reply: '' } }];\n}\n\n// /missing → WF-07\nif (cmd === '/missing') {\n  return [{ json: { chatId, routeTo: 'wf07-misc', mode: 'missing', reply: '' } }];\n}\n\n// /report → WF-07\nif (cmd === '/report') {\n  return [{ json: { chatId, routeTo: 'wf07-misc', mode: 'report', reply: '' } }];\n}\n\n// /update → WF-08 (объединение Реестр + Банк в общий документ)\nif (cmd === '/update') {\n  return [{ json: { chatId, routeTo: 'wf08', reply: '' } }];\n}\n\n// /clear → локальная очистка листа «Банк»  ← v2.4\nif (cmd === '/clear') {\n  return [{ json: { chatId, routeTo: 'wf01-clear', reply: '' } }];\n}\n\n// Локальные ответы\nconst replies = {\n  '/start':  '\\uD83D\\uDC4B Привет!\\n\\nОтправьте PDF, фото документа, голосовое или текст о платеже — я запишу в реестр.\\n\\nКнопки внизу — основные команды. /help — список команд.',\n  '/help':   '\\uD83D\\uDCD6 Команды:\\n/start — приветствие и меню\\n/status — последние записи\\n/vpsk — загрузить банковскую выписку\\n/reconcile [YYYY-MM] — сверка реестра с банком\\n/missing — незакрытые позиции\\n/report — ссылка на полный отчёт\\n/update — пересобрать сводный реестр\\n/clear — очистить лист «Банк»\\n/settings — настройки\\n/cancel — отмена',\n  '/cancel': '\\u2705 Отменено.',\n  '/status': '\\uD83D\\uDCCB Последние записи — в листе Реестр.'\n};\n\nlet reply = replies[cmd];\n\nif (!reply && cmd === '/settings') {\n  const sub = args.join(' ');\n  if (!sub)                           reply = '\\u2699\\uFE0F Настройки:\\n/settings recipients list\\n/settings recipients add @user\\n/settings recipients remove @user\\n/settings schedule show';\n  else if (sub === 'recipients list') reply = '\\uD83D\\uDCCB Получатели: откройте лист «Получатели» в Google Sheets.';\n  else if (sub.startsWith('recipients add'))    reply = '\\u2705 Добавьте строку в лист «Получатели»: chat_id | username | owner/accountant | TRUE';\n  else if (sub.startsWith('recipients remove')) reply = '\\u2705 Поставьте active=FALSE в листе «Получатели».';\n  else if (sub === 'schedule show')   reply = '\\uD83D\\uDD50 Сверка: 1-е число, 09:00 UTC+3 (Europe/Minsk)';\n  else                                reply = `\\u2753 Неизвестная подкоманда: ${sub}`;\n}\n\nif (!reply) reply = `\\u2753 Неизвестная команда: ${cmd}`;\n\nreturn [{ json: { chatId, routeTo: 'local', reply } }];\n"
       },
       "id": "ad47a6a4-27ae-4c90-99a1-b4274ac2ef31",
       "name": "Command Handler",
@@ -138,8 +138,8 @@
     {
       "parameters": {
         "mode": "expression",
-        "numberOutputs": 5,
-        "output": "={{ $json.routeTo === 'wf07' ? 0 : $json.routeTo === 'wf07-misc' ? 1 : $json.routeTo === 'wf06-stmt' ? 2 : $json.routeTo === 'wf08' ? 4 : 3 }}"
+        "numberOutputs": 6,
+        "output": "={{ $json.routeTo === 'wf07' ? 0 : $json.routeTo === 'wf07-misc' ? 1 : $json.routeTo === 'wf06-stmt' ? 2 : $json.routeTo === 'wf08' ? 4 : $json.routeTo === 'wf01-clear' ? 5 : 3 }}"
       },
       "id": "cd25018a-c9a5-42fc-b412-ab51035282d9",
       "name": "Command Route Switch",
@@ -220,25 +220,30 @@
     },
     {
       "parameters": {
-        "chatId": "={{ $json.chatId }}",
-        "text": "={{ $json.reply }}",
-        "additionalFields": {}
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  chat_id: $json.chatId,\n  text: $json.reply,\n  reply_markup: {\n    keyboard: [\n      [{ text: '\\uD83D\\uDCE5 Загрузить выписку' }, { text: '\\uD83D\\uDD04 Сверить с банком' }],\n      [{ text: '\\uD83D\\uDCCA Сводный реестр' }, { text: '\\u2753 Незакрытые позиции' }],\n      [{ text: '\\uD83D\\uDCC4 Последние записи' }, { text: '\\uD83D\\uDD17 Ссылка на отчёт' }],\n      [{ text: '\\uD83D\\uDDD1\\uFE0F Очистить лист Банк' }, { text: '\\u2139 Помощь' }]\n    ],\n    resize_keyboard: true,\n    is_persistent: true\n  }\n}) }}",
+        "options": {}
       },
       "id": "8a7bc0c5-3afb-4e9d-b866-8455dde298b2",
       "name": "Send Command Reply",
-      "type": "n8n-nodes-base.telegram",
-      "typeVersion": 1.2,
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
       "position": [
         128,
         816
-      ],
-      "webhookId": "wf01-send-cmd",
-      "credentials": {
-        "telegramApi": {
-          "id": "j5C9rNWpZCK0yhWr",
-          "name": "MINE TG"
-        }
-      }
+      ]
     },
     {
       "parameters": {
@@ -627,6 +632,54 @@
       }
     },
     {
+      "parameters": {
+        "operation": "clear",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Банк",
+          "mode": "name"
+        },
+        "clear": "specificRows",
+        "startIndex": 2,
+        "rowsToDelete": 10000
+      },
+      "id": "c1111111-1111-1111-1111-111111111101",
+      "name": "Clear Bank Sheet (cmd)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        128,
+        720
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "rnvzuybEF91V5uQQ",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// === /clear → confirmation ===\n// Источник chatId — Command Handler. Google Sheets clear не пробрасывает json,\n// поэтому достаём chatId из предыдущего узла напрямую.\nconst chatId = $('Command Handler').first().json.chatId;\nreturn [{ json: {\n  chatId,\n  reply: '\\uD83D\\uDDD1\\uFE0F Лист «Банк» очищен. Все банковские операции удалены.\\n\\nЗагрузить выписку снова — /vpsk.'\n}}];"
+      },
+      "id": "c1111111-1111-1111-1111-111111111102",
+      "name": "Build Clear Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        352,
+        720
+      ]
+    },
+    {
       "parameters": {},
       "id": "cccccccc-cccc-cccc-cccc-cccccccccc01",
       "name": "Set Commands (manual)",
@@ -652,7 +705,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "{\"commands\": [{\"command\": \"start\", \"description\": \"Приветствие и справка\"}, {\"command\": \"status\", \"description\": \"Последние 5 операций\"}, {\"command\": \"vpsk\", \"description\": \"Загрузить банковскую выписку\"}, {\"command\": \"reconcile\", \"description\": \"Запустить сверку\"}, {\"command\": \"missing\", \"description\": \"Незакрытые позиции\"}, {\"command\": \"report\", \"description\": \"Ссылка на отчёт в Google Sheets\"}, {\"command\": \"update\", \"description\": \"Пересобрать объединённый Реестр для бухгалтерии\"}, {\"command\": \"settings\", \"description\": \"Настройки уведомлений и расписания\"}, {\"command\": \"cancel\", \"description\": \"Отменить текущую операцию\"}]}",
+        "jsonBody": "{\"commands\": [{\"command\": \"start\", \"description\": \"👋 Начало работы и меню\"}, {\"command\": \"vpsk\", \"description\": \"📥 Загрузить банковскую выписку\"}, {\"command\": \"reconcile\", \"description\": \"🔄 Сверить реестр с банком\"}, {\"command\": \"update\", \"description\": \"📊 Обновить сводный реестр\"}, {\"command\": \"missing\", \"description\": \"❓ Незакрытые позиции\"}, {\"command\": \"status\", \"description\": \"📄 Последние записи\"}, {\"command\": \"report\", \"description\": \"🔗 Ссылка на полный отчёт\"}, {\"command\": \"clear\", \"description\": \"🗑 Очистить лист «Банк»\"}, {\"command\": \"settings\", \"description\": \"⚙ Настройки уведомлений\"}, {\"command\": \"help\", \"description\": \"ℹ Список команд\"}, {\"command\": \"cancel\", \"description\": \"❌ Отменить операцию\"}]}",
         "options": {}
       },
       "id": "cccccccc-cccc-cccc-cccc-cccccccccc02",
@@ -786,6 +839,35 @@
         [
           {
             "node": "Call WF08",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Clear Bank Sheet (cmd)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clear Bank Sheet (cmd)": {
+      "main": [
+        [
+          {
+            "node": "Build Clear Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Clear Reply": {
+      "main": [
+        [
+          {
+            "node": "Send Command Reply",
             "type": "main",
             "index": 0
           }
