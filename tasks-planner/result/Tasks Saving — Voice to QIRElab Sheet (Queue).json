@@ -127,8 +127,8 @@
       },
       "onError": "continueErrorOutput",
       "retryOnFail": true,
-      "maxTries": 3,
-      "waitBetweenTries": 5000
+      "maxTries": 5,
+      "waitBetweenTries": 30000
     },
     {
       "parameters": {
@@ -169,13 +169,58 @@
       },
       "onError": "continueErrorOutput",
       "retryOnFail": true,
-      "maxTries": 3,
-      "waitBetweenTries": 5000
+      "maxTries": 5,
+      "waitBetweenTries": 15000
     },
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "// Извлекаем структурированный JSON из ответа OpenAI.\nconst raw = $json.message?.content ?? $json.content ?? $json.output ?? $json.text ?? $json;\nlet parsed;\nif (typeof raw === 'string') {\n  try {\n    parsed = JSON.parse(raw);\n  } catch (e) {\n    const match = raw.match(/\\{[\\s\\S]*\\}/);\n    if (!match) throw new Error('OpenAI did not return JSON: ' + raw);\n    parsed = JSON.parse(match[0]);\n  }\n} else {\n  parsed = raw;\n}\n\nreturn {\n  json: {\n    task: {\n      Наименование: parsed['Наименование'] ?? '',\n      Приоритет: parsed['Приоритет'] ?? '',\n      'Характер задач': parsed['Характер задач'] ?? '',\n      Время: parsed['Время'] ?? '',\n      Проект: parsed['Проект'] ?? '',\n      Сфера: parsed['Сфера'] ?? '',\n      Запланировано: parsed['Запланировано'] ?? '',\n      Комментарий: parsed['Комментарий'] ?? ''\n    },\n    chatId: $('Telegram Trigger (Voice)').item.json.message.chat.id,\n    transcript: $('OpenAI Transcribe (Whisper)').item.json.text\n  }\n};"
+        "jsCode": "// Готовим тело запроса к резервной модели Groq (chat completions).\nlet transcript = '';\ntry { transcript = $('OpenAI Transcribe (Whisper)').item.json.text || ''; } catch (e) {}\nif (!transcript) { try { transcript = $('Groq Transcribe (Fallback)').item.json.text || ''; } catch (e) {} }\nif (!transcript) { throw new Error('Нет транскрипта для резервного ИИ-шага.'); }\nconst SYSTEM = \"Ты помощник, который структурирует задачи, надиктованные собственником бизнеса. Получив текст задачи, верни СТРОГО валидный JSON без markdown, без комментариев, без пояснений, ровно с такими полями:\\n{\\n  \\\"Наименование\\\": \\\"\\\",\\n  \\\"Приоритет\\\": \\\"\\\",\\n  \\\"Характер задач\\\": \\\"\\\",\\n  \\\"Время\\\": \\\"\\\",\\n  \\\"Проект\\\": \\\"\\\",\\n  \\\"Сфера\\\": \\\"\\\",\\n  \\\"Запланировано\\\": \\\"\\\",\\n  \\\"Комментарий\\\": \\\"\\\"\\n}\\n\\nПравила:\\n- Наименование: краткое название задачи.\\n- Приоритет: одно из A, B, C, D. Если приоритет явно указан в сообщении — использовать его. Если в сообщении явно сказано про срочность/важность — определить по смыслу (A=срочно и важно, B=важно но не срочно, C=срочно но не важно, D=не срочно и не важно). Если в сообщении НЕТ ни явного приоритета, ни явных указаний на срочность/важность — по умолчанию ставь \\\"B\\\".\\n- Характер задач: одно из \\\"Краткосрочные\\\", \\\"Бюджетируемые\\\", \\\"Привязанные ко времени\\\". Применяй правила в таком порядке:\\n  1. Если в сообщении задача назначена на конкретную дату и время (или указан дедлайн/срок/день недели/конкретное время) — \\\"Привязанные ко времени\\\".\\n  2. Иначе если в сообщении указана продолжительность задачи (в часах, минутах или комбинации) — \\\"Бюджетируемые\\\".\\n  3. Иначе по умолчанию — \\\"Краткосрочные\\\".\\n  Если есть и срок, и продолжительность — \\\"Привязанные ко времени\\\", а продолжительность записать в поле Время.\\n- Время: заполнять ТОЛЬКО если в задаче есть явная оценка продолжительности (минуты/часы). ВСЕГДА конвертировать в часы как десятичное число с точкой (не запятой). Примеры конвертации: 15 минут → 0.25; 30 минут → 0.5; 45 минут → 0.75; 1 час → 1; 1 час 30 минут → 1.5; 2 часа → 2; 2.5 часа → 2.5; 3 часа 15 минут → 3.25. Возвращай ТОЛЬКО число (например \\\"0.5\\\"), без единиц измерения и без слова \\\"час\\\". Если оценки продолжительности нет — пустая строка.\\n- Проект: заполнять, только если задача явно относится к проекту; иначе пустая строка.\\n- Сфера: заполнять, только если Проект пустой. Значение возвращай строго на английском, ровно одно из этого списка: Legal, Marketing, Sales, Finance, Hiring Resources, Strategy, Operations, Business Model, Development. Определи сферу по смыслу задачи. Если автор упоминает сферу/направление, но точного совпадения в списке нет — выбери наиболее близкое по смыслу значение из списка (приблизительно, а не дословно), а не оставляй поле пустым. Возвращать значения вне этого списка запрещено.\\n- Запланировано: всегда пустая строка.\\n- Комментарий: детали, которые не попали в другие поля.\\n\\nОтвечай ТОЛЬКО JSON-объектом, без обёрток, без префиксов.\";\nreturn { json: { model: 'llama-3.3-70b-versatile', temperature: 0.2, response_format: { type: 'json_object' }, messages: [ { role: 'system', content: SYSTEM }, { role: 'user', content: transcript } ] } };"
+      },
+      "id": "prep-fallback-transcript-tp",
+      "name": "Prep Fallback Transcript",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9824,
+        3520
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "groq-structure-fallback-tp",
+      "name": "Groq Structure (Fallback)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        10064,
+        3520
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_GROQ_CREDENTIAL_ID",
+          "name": "Groq API"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 10000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Извлекаем структурированный JSON из ответа OpenAI.\nconst raw = $json.choices?.[0]?.message?.content ?? $json.message?.content ?? $json.content ?? $json.output ?? $json.text ?? $json;\nlet parsed;\nif (typeof raw === 'string') {\n  try {\n    parsed = JSON.parse(raw);\n  } catch (e) {\n    const match = raw.match(/\\{[\\s\\S]*\\}/);\n    if (!match) throw new Error('OpenAI did not return JSON: ' + raw);\n    parsed = JSON.parse(match[0]);\n  }\n} else {\n  parsed = raw;\n}\n\n// Транскрипт мог прийти от основного Whisper или от резервного Groq.\nlet transcript = '';\ntry { transcript = $('OpenAI Transcribe (Whisper)').item.json.text || ''; } catch (e) {}\nif (!transcript) { try { transcript = $('Groq Transcribe (Fallback)').item.json.text || ''; } catch (e) {} }\n\nreturn {\n  json: {\n    task: {\n      Наименование: parsed['Наименование'] ?? '',\n      Приоритет: parsed['Приоритет'] ?? '',\n      'Характер задач': parsed['Характер задач'] ?? '',\n      Время: parsed['Время'] ?? '',\n      Проект: parsed['Проект'] ?? '',\n      Сфера: parsed['Сфера'] ?? '',\n      Запланировано: parsed['Запланировано'] ?? '',\n      Комментарий: parsed['Комментарий'] ?? ''\n    },\n    chatId: $('Telegram Trigger (Voice)').item.json.message.chat.id,\n    transcript: transcript\n  }\n};"
       },
       "id": "1c7c7f13-fcd8-420f-af57-d898a38ad9a5",
       "name": "Parse OpenAI JSON",
@@ -362,8 +407,8 @@
     },
     {
       "parameters": {
-        "chatId": "={{ $('Telegram Trigger (Voice)').item.json.message.chat.id }}",
-        "text": "=❌ Не удалось сохранить задачу.\n\n*Шаг:* {{ $json.node?.name || $node?.name || 'неизвестный' }}\n*Ошибка:* {{ $json.error?.message || $json.error?.description || $json.error || 'неизвестная ошибка' }}",
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.errorMessage }}",
         "additionalFields": {
           "parse_mode": "Markdown"
         }
@@ -383,6 +428,81 @@
           "name": "Telegram account 2"
         }
       }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// При ошибке Whisper не пробрасывает binary дальше. Берём аудио заново\n// из Telegram Download Voice и нормализуем имя/расширение для Groq:\n// голосовые Telegram приходят как .oga, а Groq принимает только\n// [flac mp3 mp4 mpeg mpga m4a ogg opus wav webm].\nconst ALLOWED = ['flac','mp3','mp4','mpeg','mpga','m4a','ogg','opus','wav','webm'];\nconst src = $('Telegram Download Voice').first().binary;\nif (!src || !src.data) {\n  throw new Error('Не найден аудиофайл (binary data) из Telegram Download Voice для резервной расшифровки.');\n}\nconst meta = src.data;\nlet ext = (meta.fileExtension || '').toLowerCase();\nconst mime = (meta.mimeType || '').toLowerCase();\nif (!ALLOWED.includes(ext)) {\n  if (mime.includes('ogg') || mime.includes('opus') || ext === 'oga') ext = 'ogg';\n  else if (mime.includes('mpeg') || mime.includes('mp3')) ext = 'mp3';\n  else if (mime.includes('mp4') || mime.includes('m4a') || mime.includes('aac')) ext = 'm4a';\n  else if (mime.includes('wav')) ext = 'wav';\n  else if (mime.includes('webm')) ext = 'webm';\n  else ext = 'ogg';\n}\nconst binary = { data: { ...meta, fileName: 'audio.' + ext, fileExtension: ext, mimeType: mime || 'audio/ogg' } };\nreturn { json: $json, binary };"
+      },
+      "id": "attach-audio-fallback-tp",
+      "name": "Attach Audio (Fallback)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9460,
+        3440
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/audio/transcriptions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "model",
+              "value": "whisper-large-v3"
+            },
+            {
+              "name": "response_format",
+              "value": "json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "f1a2b3c4-d5e6-47f8-9a0b-1c2d3e4f5a6b",
+      "name": "Groq Transcribe (Fallback)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        9584,
+        3520
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_GROQ_CREDENTIAL_ID",
+          "name": "Groq API"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 10000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Классифицируем ошибку и формируем понятное сообщение владельцу.\nconst err = $json.error || {};\nconst raw = '' + (err.message || err.description || (typeof $json.error === 'string' ? $json.error : '') || $json.message || '');\nconst step = err.node?.name || $json.node?.name || 'неизвестный';\nconst low = raw.toLowerCase();\nconst NL = String.fromCharCode(10);\nlet advice;\nif (low.includes('insufficient_quota') || low.includes('exceeded your current quota') || low.includes('billing') || low.includes('payment')) {\n  advice = '💳 Закончились средства или квота OpenAI. Пополните баланс в кабинете OpenAI (Settings → Billing) и убедитесь, что ключ из платного проекта.';\n} else if (low.includes('429') || low.includes('rate limit') || low.includes('too many requests')) {\n  advice = '⏳ Временный лимит запросов к ИИ. Это пройдёт само — продиктуйте задачу ещё раз через минуту.';\n} else {\n  advice = 'Попробуйте ещё раз. Если повторяется — проверьте лог выполнения в n8n.';\n}\nlet chatId;\ntry { chatId = $('Telegram Trigger (Voice)').first().json.message.chat.id; } catch (e) { chatId = $json.chatId; }\nconst errorMessage = ['❌ Не удалось сохранить задачу.', '', '*Шаг:* ' + step, '*Ошибка:* ' + (raw || 'неизвестная ошибка'), '', advice].join(NL);\nreturn { json: { chatId, errorMessage } };"
+      },
+      "id": "a7c3e9d1-2b4f-4c6a-8d0e-3f5a6b7c8d9e",
+      "name": "Classify Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10304,
+        3584
+      ]
     }
   ],
   "pinData": {},
@@ -427,7 +547,7 @@
         ],
         [
           {
-            "node": "Telegram Notify Error",
+            "node": "Classify Error",
             "type": "main",
             "index": 0
           }
@@ -445,7 +565,43 @@
         ],
         [
           {
-            "node": "Telegram Notify Error",
+            "node": "Attach Audio (Fallback)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach Audio (Fallback)": {
+      "main": [
+        [
+          {
+            "node": "Groq Transcribe (Fallback)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Classify Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Transcribe (Fallback)": {
+      "main": [
+        [
+          {
+            "node": "OpenAI Structure Task",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Classify Error",
             "type": "main",
             "index": 0
           }
@@ -463,7 +619,7 @@
         ],
         [
           {
-            "node": "Telegram Notify Error",
+            "node": "Prep Fallback Transcript",
             "type": "main",
             "index": 0
           }
@@ -481,7 +637,7 @@
         ],
         [
           {
-            "node": "Telegram Notify Error",
+            "node": "Classify Error",
             "type": "main",
             "index": 0
           }
@@ -499,7 +655,7 @@
         ],
         [
           {
-            "node": "Telegram Notify Error",
+            "node": "Classify Error",
             "type": "main",
             "index": 0
           }
@@ -517,7 +673,7 @@
         ],
         [
           {
-            "node": "Telegram Notify Error",
+            "node": "Classify Error",
             "type": "main",
             "index": 0
           }
@@ -529,7 +685,54 @@
         [],
         [
           {
+            "node": "Classify Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Error": {
+      "main": [
+        [
+          {
             "node": "Telegram Notify Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prep Fallback Transcript": {
+      "main": [
+        [
+          {
+            "node": "Groq Structure (Fallback)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Classify Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Structure (Fallback)": {
+      "main": [
+        [
+          {
+            "node": "Parse OpenAI JSON",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Classify Error",
             "type": "main",
             "index": 0
           }

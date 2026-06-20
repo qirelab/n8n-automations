@@ -127,8 +127,8 @@
       },
       "onError": "continueErrorOutput",
       "retryOnFail": true,
-      "maxTries": 3,
-      "waitBetweenTries": 5000
+      "maxTries": 5,
+      "waitBetweenTries": 30000
     },
     {
       "parameters": {
@@ -145,7 +145,7 @@
               "role": "system"
             },
             {
-              "content": "={{ $('OpenAI Transcribe (Whisper)').item.json.text }}"
+              "content": "={{ $json.text }}"
             }
           ]
         },
@@ -170,13 +170,58 @@
       },
       "onError": "continueErrorOutput",
       "retryOnFail": true,
-      "maxTries": 3,
-      "waitBetweenTries": 5000
+      "maxTries": 5,
+      "waitBetweenTries": 15000
     },
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "// Собираем payload для Apps Script Web App.\n// 1) Берём расшифровку и структурированное summary.\n// 2) Считаем дату в нужной таймзоне (по умолчанию Europe/Warsaw).\n\nconst TZ = 'Europe/Warsaw'; // должна совпадать с TIMEZONE в Apps Script\n\nconst raw = $json.message?.content ?? $json.content ?? $json.output ?? $json.text ?? $json;\nlet s;\nif (typeof raw === 'string') {\n  try { s = JSON.parse(raw); }\n  catch (e) {\n    const m = raw.match(/\\{[\\s\\S]*\\}/);\n    if (!m) throw new Error('OpenAI did not return JSON: ' + raw);\n    s = JSON.parse(m[0]);\n  }\n} else { s = raw; }\n\nconst summary = {\n  'Заголовок': s['Заголовок'] ?? '',\n  'Итоги': Array.isArray(s['Итоги']) ? s['Итоги'] : [],\n  'Инсайты': Array.isArray(s['Инсайты']) ? s['Инсайты'] : [],\n  'Проблемы': Array.isArray(s['Проблемы']) ? s['Проблемы'] : [],\n  'Следующие шаги': Array.isArray(s['Следующие шаги']) ? s['Следующие шаги'] : []\n};\n\n// Дата записи в локальной таймзоне -> YYYY-MM-DD\nconst now = new Date();\nconst fmt = new Intl.DateTimeFormat('en-CA', {\n  timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit'\n});\nconst date = fmt.format(now); // YYYY-MM-DD\n\nconst transcript = $('OpenAI Transcribe (Whisper)').item.json.text || '';\nconst chatId = $('Telegram Trigger (Voice)').item.json.message.chat.id;\n\nreturn {\n  json: {\n    token: 'REPLACE_SHARED_TOKEN', // должен совпадать с DIARY_TOKEN в Script Properties\n    date,\n    transcript,\n    summary,\n    chatId\n  }\n};\n"
+        "jsCode": "// Готовим тело запроса к резервной модели Groq (chat completions).\nlet transcript = '';\ntry { transcript = $('OpenAI Transcribe (Whisper)').item.json.text || ''; } catch (e) {}\nif (!transcript) { try { transcript = $('Groq Transcribe (Fallback)').item.json.text || ''; } catch (e) {} }\nif (!transcript) { throw new Error('Нет транскрипта для резервного ИИ-шага.'); }\nconst SYSTEM = \"Ты — ассистент, который ведёт деловой дневник собственника компании. Получив расшифровку голосовой записи за день (итоги дня, инсайты, проблемы), верни СТРОГО валидный JSON без markdown, без пояснений, ровно с такими полями:\\n{\\n  \\\"Заголовок\\\": \\\"\\\",\\n  \\\"Итоги\\\": [],\\n  \\\"Инсайты\\\": [],\\n  \\\"Проблемы\\\": [],\\n  \\\"Следующие шаги\\\": []\\n}\\n\\nПравила:\\n- Заголовок: одна короткая строка (до 80 символов), суть дня.\\n- Итоги / Инсайты / Проблемы / Следующие шаги: массивы коротких пунктов на русском.\\n- Если по какому-то полю в записи ничего нет — верни пустой массив [].\\n- Не выдумывай факты, которых нет в записи. Пиши по-русски, по-деловому, кратко.\";\nreturn { json: { model: 'llama-3.3-70b-versatile', temperature: 0.2, response_format: { type: 'json_object' }, messages: [ { role: 'system', content: SYSTEM }, { role: 'user', content: transcript } ] } };"
+      },
+      "id": "prep-fallback-transcript-cn",
+      "name": "Prep Fallback Transcript",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9824,
+        3520
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "groq-summarize-fallback-cn",
+      "name": "Groq Summarize (Fallback)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        10064,
+        3520
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_GROQ",
+          "name": "Groq API"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 10000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Собираем payload для Apps Script Web App.\n// 1) Берём расшифровку и структурированное summary.\n// 2) Считаем дату в нужной таймзоне (по умолчанию Europe/Warsaw).\n\nconst TZ = 'Europe/Warsaw'; // должна совпадать с TIMEZONE в Apps Script\n\nconst raw = $json.choices?.[0]?.message?.content ?? $json.message?.content ?? $json.content ?? $json.output ?? $json.text ?? $json;\nlet s;\nif (typeof raw === 'string') {\n  try { s = JSON.parse(raw); }\n  catch (e) {\n    const m = raw.match(/\\{[\\s\\S]*\\}/);\n    if (!m) throw new Error('OpenAI did not return JSON: ' + raw);\n    s = JSON.parse(m[0]);\n  }\n} else { s = raw; }\n\nconst summary = {\n  'Заголовок': s['Заголовок'] ?? '',\n  'Итоги': Array.isArray(s['Итоги']) ? s['Итоги'] : [],\n  'Инсайты': Array.isArray(s['Инсайты']) ? s['Инсайты'] : [],\n  'Проблемы': Array.isArray(s['Проблемы']) ? s['Проблемы'] : [],\n  'Следующие шаги': Array.isArray(s['Следующие шаги']) ? s['Следующие шаги'] : []\n};\n\n// Дата записи в локальной таймзоне -> YYYY-MM-DD\nconst now = new Date();\nconst fmt = new Intl.DateTimeFormat('en-CA', {\n  timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit'\n});\nconst date = fmt.format(now); // YYYY-MM-DD\n\n// Транскрипт мог прийти от основного Whisper или от резервного Groq.\nlet transcript = '';\ntry { transcript = $('OpenAI Transcribe (Whisper)').item.json.text || ''; } catch (e) {}\nif (!transcript) { try { transcript = $('Groq Transcribe (Fallback)').item.json.text || ''; } catch (e) {} }\nconst chatId = $('Telegram Trigger (Voice)').item.json.message.chat.id;\n\nreturn {\n  json: {\n    token: 'REPLACE_SHARED_TOKEN', // должен совпадать с DIARY_TOKEN в Script Properties\n    date,\n    transcript,\n    summary,\n    chatId\n  }\n};\n"
       },
       "id": "build-payload",
       "name": "Build Payload",
@@ -234,8 +279,8 @@
     },
     {
       "parameters": {
-        "chatId": "={{ $('Telegram Trigger (Voice)').item.json.message.chat.id }}",
-        "text": "=❌ Не удалось сохранить запись дневника.\n\n*Шаг:* {{ $json.error?.node?.name || $json.node?.name || 'неизвестный' }}\n*Ошибка:* {{ $json.error?.message || $json.error?.description || ($json.error ? (typeof $json.error === 'string' ? $json.error : JSON.stringify($json.error)) : 'неизвестная ошибка') }}",
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.errorMessage }}",
         "additionalFields": {
           "parse_mode": "Markdown"
         }
@@ -254,6 +299,85 @@
           "name": "Telegram Diary Bot"
         }
       }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// При ошибке Whisper не пробрасывает binary дальше. Берём аудио заново\n// из Telegram Download Voice и нормализуем имя/расширение для Groq:\n// голосовые Telegram приходят как .oga, а Groq принимает только\n// [flac mp3 mp4 mpeg mpga m4a ogg opus wav webm].\nconst ALLOWED = ['flac','mp3','mp4','mpeg','mpga','m4a','ogg','opus','wav','webm'];\nconst src = $('Telegram Download Voice').first().binary;\nif (!src || !src.data) {\n  throw new Error('Не найден аудиофайл (binary data) из Telegram Download Voice для резервной расшифровки.');\n}\nconst meta = src.data;\nlet ext = (meta.fileExtension || '').toLowerCase();\nconst mime = (meta.mimeType || '').toLowerCase();\nif (!ALLOWED.includes(ext)) {\n  if (mime.includes('ogg') || mime.includes('opus') || ext === 'oga') ext = 'ogg';\n  else if (mime.includes('mpeg') || mime.includes('mp3')) ext = 'mp3';\n  else if (mime.includes('mp4') || mime.includes('m4a') || mime.includes('aac')) ext = 'm4a';\n  else if (mime.includes('wav')) ext = 'wav';\n  else if (mime.includes('webm')) ext = 'webm';\n  else ext = 'ogg';\n}\nconst binary = { data: { ...meta, fileName: 'audio.' + ext, fileExtension: ext, mimeType: mime || 'audio/ogg' } };\nreturn { json: $json, binary };"
+      },
+      "id": "attach-audio-fallback-cn",
+      "name": "Attach Audio (Fallback)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9460,
+        3440
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/audio/transcriptions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "model",
+              "value": "whisper-large-v3"
+            },
+            {
+              "name": "language",
+              "value": "ru"
+            },
+            {
+              "name": "response_format",
+              "value": "json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "groq-transcribe-fallback",
+      "name": "Groq Transcribe (Fallback)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        9584,
+        3520
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_GROQ",
+          "name": "Groq API"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 10000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Классифицируем ошибку и формируем понятное сообщение владельцу.\nconst err = $json.error || {};\nconst raw = '' + (err.message || err.description || (typeof $json.error === 'string' ? $json.error : '') || $json.message || '');\nconst step = err.node?.name || $json.node?.name || 'неизвестный';\nconst low = raw.toLowerCase();\nconst NL = String.fromCharCode(10);\nlet advice;\nif (low.includes('insufficient_quota') || low.includes('exceeded your current quota') || low.includes('billing') || low.includes('payment')) {\n  advice = '💳 Закончились средства или квота OpenAI. Пополните баланс в кабинете OpenAI (Settings → Billing) и убедитесь, что ключ из платного проекта.';\n} else if (low.includes('429') || low.includes('rate limit') || low.includes('too many requests')) {\n  advice = '⏳ Временный лимит запросов к ИИ. Это пройдёт само — отправьте запись ещё раз через минуту.';\n} else {\n  advice = 'Попробуйте ещё раз. Если повторяется — проверьте лог выполнения в n8n.';\n}\nlet chatId;\ntry { chatId = $('Telegram Trigger (Voice)').first().json.message.chat.id; } catch (e) { chatId = $json.chatId; }\nconst errorMessage = ['❌ Не удалось сохранить запись дневника.', '', '*Шаг:* ' + step, '*Ошибка:* ' + (raw || 'неизвестная ошибка'), '', advice].join(NL);\nreturn { json: { chatId, errorMessage } };"
+      },
+      "id": "classify-error",
+      "name": "Classify Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10304,
+        3600
+      ]
     }
   ],
   "pinData": {},
@@ -298,7 +422,7 @@
         ],
         [
           {
-            "node": "Telegram Notify Error",
+            "node": "Classify Error",
             "type": "main",
             "index": 0
           }
@@ -316,7 +440,43 @@
         ],
         [
           {
-            "node": "Telegram Notify Error",
+            "node": "Attach Audio (Fallback)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach Audio (Fallback)": {
+      "main": [
+        [
+          {
+            "node": "Groq Transcribe (Fallback)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Classify Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Transcribe (Fallback)": {
+      "main": [
+        [
+          {
+            "node": "OpenAI Summarize Day",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Classify Error",
             "type": "main",
             "index": 0
           }
@@ -334,7 +494,7 @@
         ],
         [
           {
-            "node": "Telegram Notify Error",
+            "node": "Prep Fallback Transcript",
             "type": "main",
             "index": 0
           }
@@ -363,7 +523,54 @@
         ],
         [
           {
+            "node": "Classify Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Error": {
+      "main": [
+        [
+          {
             "node": "Telegram Notify Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prep Fallback Transcript": {
+      "main": [
+        [
+          {
+            "node": "Groq Summarize (Fallback)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Classify Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Summarize (Fallback)": {
+      "main": [
+        [
+          {
+            "node": "Build Payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Classify Error",
             "type": "main",
             "index": 0
           }
