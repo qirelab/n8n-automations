@@ -187,8 +187,10 @@ function appendDaySummary_(doc, year, monthIdx, day, summary) {
   var existingIdx = findDayHeadingIndex_(body, DAY_PREFIX + dateKey);
 
   if (existingIdx === -1) {
-    // Новый день -> новая страница в конце документа.
-    if (body.getNumChildren() > 1) body.appendPageBreak();
+    // Новый день. Разрыв страницы ставим ТОЛЬКО если в документе уже есть
+    // хотя бы один день — чтобы первый день не уезжал на 2-ю страницу,
+    // оставляя 1-ю пустой (один титул).
+    if (hasAnyDay_(body)) body.appendPageBreak();
     body.appendParagraph(headingText).setHeading(DocumentApp.ParagraphHeading.HEADING1);
     appendSummaryBody_(body, summary, null);
   } else {
@@ -200,6 +202,20 @@ function appendDaySummary_(doc, year, monthIdx, day, summary) {
     appendSummaryBody_(body, summary, insertAt);
   }
   doc.saveAndClose();
+}
+
+// Есть ли в документе хотя бы один заголовок дня (HEADING1 с DAY_PREFIX)?
+function hasAnyDay_(body) {
+  var n = body.getNumChildren();
+  for (var i = 0; i < n; i++) {
+    var el = body.getChild(i);
+    if (el.getType() === DocumentApp.ElementType.PARAGRAPH &&
+        el.asParagraph().getHeading() === DocumentApp.ParagraphHeading.HEADING1 &&
+        el.asParagraph().getText().indexOf(DAY_PREFIX) === 0) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function findDayHeadingIndex_(body, prefix) {
@@ -404,4 +420,121 @@ function testEntry() {
     }
   });
   Logger.log(JSON.stringify(res, null, 2));
+}
+
+/**
+ * Диагностика месячного документа. Подставьте id из лога testEntry
+ * (monthlyDocUrl …open?id=ЗДЕСЬ) и запустите. Покажет:
+ *   • сколько элементов и весь текст в документе, в который реально пишет скрипт;
+ *   • сколько файлов с таким именем существует (нет ли дублей, из-за которых
+ *     вы открываете другой, пустой документ).
+ */
+function diagDoc() {
+  var id = '1SQ6-5TryPwWVWthvK1QogpU4OtvzX4i_av6RBQAEHgk'; // <- id из вашего лога
+  var doc = DocumentApp.openById(id);
+  var body = doc.getBody();
+  Logger.log('=== DOC ' + id + ' ("' + doc.getName() + '") ===');
+  Logger.log('URL: ' + doc.getUrl());
+  Logger.log('Элементов в теле: ' + body.getNumChildren());
+  Logger.log('--- ТЕКСТ НАЧАЛО ---');
+  Logger.log(body.getText());
+  Logger.log('--- ТЕКСТ КОНЕЦ ---');
+
+  var name = doc.getName();
+  var files = DriveApp.getFilesByName(name);
+  var n = 0, lines = [];
+  while (files.hasNext()) {
+    var f = files.next();
+    n++;
+    lines.push(f.getId() + '  (изм. ' +
+      Utilities.formatDate(f.getLastUpdated(), CONFIG.TIMEZONE, 'yyyy-MM-dd HH:mm') + ')');
+  }
+  Logger.log('Файлов с именем "' + name + '": ' + n);
+  Logger.log(lines.join('\n'));
+}
+
+/**
+ * Одноразовая уборка июньского документа:
+ *   1. Удаляет тестовые блоки «➕ Дополнение …», содержащие маркер тестового
+ *      прогона (TEST_MARKER) — это следы testEntry в реальном дневнике.
+ *   2. Удаляет ведущий разрыв страницы / пустые абзацы перед первым днём,
+ *      из-за которых 1-я страница оставалась пустой (один титул).
+ * Запускать из редактора (Run → cleanupJune). Деплой не требуется.
+ * id и маркер при необходимости поправьте под свой случай.
+ */
+function cleanupJune() {
+  var id = '1SQ6-5TryPwWVWthvK1QogpU4OtvzX4i_av6RBQAEHgk'; // id месячного документа
+  var TEST_MARKER = 'Проверили автоматизацию дневника от голоса до документа';
+
+  var doc = DocumentApp.openById(id);
+  var body = doc.getBody();
+  var PARA = DocumentApp.ElementType.PARAGRAPH;
+  var BREAK = DocumentApp.ElementType.PAGE_BREAK;
+  var H1 = DocumentApp.ParagraphHeading.HEADING1;
+  var H3 = DocumentApp.ParagraphHeading.HEADING3;
+  var TITLE = DocumentApp.ParagraphHeading.TITLE;
+  var DAY = '🗓 ';
+  var ADD = '➕ Дополнение';
+
+  // Снимок детей (ссылки на элементы стабильны при последующем удалении).
+  var kids = [];
+  var total = body.getNumChildren();
+  for (var i = 0; i < total; i++) {
+    var el = body.getChild(i);
+    var isPara = el.getType() === PARA;
+    kids.push({
+      el: el,
+      type: el.getType(),
+      text: isPara ? el.asParagraph().getText() : '',
+      heading: isPara ? el.asParagraph().getHeading() : null
+    });
+  }
+
+  var toRemove = [];
+  var removedBlocks = 0, removedBreaks = 0;
+
+  // 1) Тестовые блоки «➕ Дополнение …».
+  for (var a = 0; a < kids.length; a++) {
+    var k = kids[a];
+    if (!(k.type === PARA && k.heading === H3 && k.text.indexOf(ADD) === 0)) continue;
+    // Конец блока: следующий день / следующее дополнение / конец документа.
+    var end = kids.length;
+    for (var b = a + 1; b < kids.length; b++) {
+      var kb = kids[b];
+      var isDay = kb.heading === H1 && kb.text.indexOf(DAY) === 0;
+      var isNextAdd = kb.heading === H3 && kb.text.indexOf(ADD) === 0;
+      if (isDay || isNextAdd) { end = b; break; }
+    }
+    var isTest = false;
+    for (var c = a; c < end; c++) {
+      if (kids[c].text.indexOf(TEST_MARKER) !== -1) { isTest = true; break; }
+    }
+    if (isTest) {
+      for (var d = a; d < end; d++) toRemove.push(kids[d].el);
+      removedBlocks++;
+    }
+  }
+
+  // 2) Ведущий разрыв страницы / пустые абзацы перед первым днём (титул не трогаем).
+  var firstDayIdx = -1;
+  for (var f = 0; f < kids.length; f++) {
+    if (kids[f].heading === H1 && kids[f].text.indexOf(DAY) === 0) { firstDayIdx = f; break; }
+  }
+  if (firstDayIdx > 0) {
+    for (var g = 0; g < firstDayIdx; g++) {
+      var kg = kids[g];
+      var isBreak = kg.type === BREAK;
+      var isEmptyPara = kg.type === PARA && kg.heading !== TITLE && kg.text.trim() === '';
+      if (isBreak || isEmptyPara) { toRemove.push(kg.el); removedBreaks++; }
+    }
+  }
+
+  for (var r = 0; r < toRemove.length; r++) {
+    try { toRemove[r].removeFromParent(); } catch (e) { Logger.log('Пропуск элемента: ' + e); }
+  }
+  doc.saveAndClose();
+
+  Logger.log('Удалено тестовых блоков «Дополнение»: ' + removedBlocks);
+  Logger.log('Удалено ведущих разрывов/пустых абзацев: ' + removedBreaks);
+  Logger.log('Готово. Обновите вкладку с документом.');
 }
