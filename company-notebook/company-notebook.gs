@@ -94,7 +94,8 @@ function doGet() {
 
 /**
  * payload = { token, date:'YYYY-MM-DD', transcript:'...',
- *             summary:{ Заголовок, Итоги[], Инсайты[], Проблемы[], 'Следующие шаги'[] } }
+ *             summary:{ Заголовок, Главное[], Детали[], Инсайты[], Проблемы[],
+ *                       'Следующие шаги'[] } }
  */
 function processEntry_(payload) {
   var date = payload.date;                      // YYYY-MM-DD
@@ -234,33 +235,41 @@ function nextDayOrEnd_(body, fromIdx) {
 }
 
 /**
- * Печатает тело резюме (секции Итоги/Инсайты/Проблемы/Следующие шаги).
- * Если insertAt === null — добавляет в конец; иначе вставляет с этого индекса
- * и возвращает следующий свободный индекс.
+ * Печатает тело резюме по приоритету:
+ *   🔑 Главное (ключевые пункты, выделены жирным) → ▸ Детали →
+ *   💡 Инсайты → ⚠ Проблемы → → Следующие шаги.
+ * Пустые секции пропускаются. Если insertAt === null — добавляет в конец;
+ * иначе вставляет с этого индекса и возвращает следующий свободный индекс.
  */
 function appendSummaryBody_(body, summary, insertAt) {
+  var H2 = DocumentApp.ParagraphHeading.HEADING2;
+  var H3 = DocumentApp.ParagraphHeading.HEADING3;
   var sections = [
-    ['Итоги', summary['Итоги']],
-    ['Инсайты', summary['Инсайты']],
-    ['Проблемы', summary['Проблемы']],
-    ['Следующие шаги', summary['Следующие шаги']]
+    { label: '🔑 Главное',         items: summary['Главное'],        heading: H2, bold: true },
+    { label: '▸ Детали',           items: summary['Детали'],         heading: H3, bold: false },
+    { label: '💡 Инсайты',         items: summary['Инсайты'],        heading: H3, bold: false },
+    { label: '⚠ Проблемы',         items: summary['Проблемы'],       heading: H3, bold: false },
+    { label: '→ Следующие шаги',   items: summary['Следующие шаги'], heading: H3, bold: false }
   ];
   var any = false;
   for (var s = 0; s < sections.length; s++) {
-    var label = sections[s][0];
-    var items = sections[s][1];
+    var sec = sections[s];
+    var items = sec.items;
     if (!Array.isArray(items) || items.length === 0) continue;
     any = true;
     if (insertAt === null) {
-      body.appendParagraph(label).setHeading(DocumentApp.ParagraphHeading.HEADING3);
+      body.appendParagraph(sec.label).setHeading(sec.heading);
       for (var j = 0; j < items.length; j++) {
-        body.appendParagraph('•  ' + items[j]).setHeading(DocumentApp.ParagraphHeading.NORMAL);
+        var p = body.appendParagraph('•  ' + items[j]);
+        p.setHeading(DocumentApp.ParagraphHeading.NORMAL);
+        if (sec.bold) p.editAsText().setBold(true);
       }
     } else {
-      insertAt = insertHeading_(body, insertAt, label, DocumentApp.ParagraphHeading.HEADING3);
+      insertAt = insertHeading_(body, insertAt, sec.label, sec.heading);
       for (var k = 0; k < items.length; k++) {
-        body.insertParagraph(insertAt++, '•  ' + items[k])
-            .setHeading(DocumentApp.ParagraphHeading.NORMAL);
+        var ip = body.insertParagraph(insertAt++, '•  ' + items[k]);
+        ip.setHeading(DocumentApp.ParagraphHeading.NORMAL);
+        if (sec.bold) ip.editAsText().setBold(true);
       }
     }
   }
@@ -387,7 +396,8 @@ function testEntry() {
     transcript: 'Тестовая расшифровка дня.',
     summary: {
       'Заголовок': 'Тестовый день',
-      'Итоги': ['Проверили автоматизацию дневника'],
+      'Главное': ['Проверили автоматизацию дневника от голоса до документа'],
+      'Детали': ['Расшифровка сохранилась в папку недели на Drive'],
       'Инсайты': ['Связка Telegram → Whisper → Drive работает'],
       'Проблемы': [],
       'Следующие шаги': ['Записать первую реальную запись']
